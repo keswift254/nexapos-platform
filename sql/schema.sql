@@ -1,0 +1,84 @@
+CREATE DATABASE IF NOT EXISTS nexapos_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE nexapos_platform;
+
+CREATE TABLE IF NOT EXISTS shops (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS clients (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    device_id VARCHAR(64) NOT NULL UNIQUE,
+    device_label VARCHAR(160) NOT NULL,
+    api_key_hash CHAR(64) NOT NULL UNIQUE,
+    shop_id INT NOT NULL,
+    business_name VARCHAR(160) NULL,
+    settlement_type ENUM('bank', 'mpesa') NULL,
+    bank_code VARCHAR(20) NULL,
+    account_number VARCHAR(40) NULL,
+    account_name VARCHAR(160) NULL,
+    subaccount_code VARCHAR(60) NULL UNIQUE,
+    percentage_charge DECIMAL(5,2) NULL,
+    is_verified TINYINT(1) NOT NULL DEFAULT 0,
+    status ENUM('pending_settlement', 'active', 'disabled') NOT NULL DEFAULT 'pending_settlement',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX (shop_id),
+    FOREIGN KEY (shop_id) REFERENCES shops(id)
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    client_id INT NOT NULL,
+    reference VARCHAR(60) NOT NULL UNIQUE,
+    amount_minor INT NOT NULL,
+    currency VARCHAR(10) NOT NULL,
+    subaccount_code VARCHAR(60) NOT NULL,
+    status ENUM('initialized', 'verified_success', 'verified_failed') NOT NULL DEFAULT 'initialized',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    verified_at TIMESTAMP NULL,
+    INDEX (client_id),
+    FOREIGN KEY (client_id) REFERENCES clients(id)
+);
+
+-- Phase 2 sync: a shop is the grouping that lets multiple devices (phones
+-- + the counter PC) share one dataset. shop_invites is how a second
+-- device joins an existing shop (a time-limited code, see join_shop in
+-- public/index.php) rather than each device silently becoming its own
+-- isolated shop of one.
+CREATE TABLE IF NOT EXISTS shop_invites (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    shop_id INT NOT NULL,
+    code VARCHAR(8) NOT NULL UNIQUE,
+    expires_at TIMESTAMP NOT NULL,
+    used_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (shop_id),
+    FOREIGN KEY (shop_id) REFERENCES shops(id)
+);
+
+-- Generic append-only relay for every SyncedColumns table on the phone
+-- (products, sales, expenses, ...) - deliberately NOT an upsert keyed on
+-- (shop_id, table_name, row_id): MySQL's ON DUPLICATE KEY UPDATE would
+-- not advance a row's existing auto-increment id when it changes again,
+-- which would let a device that already pulled past that id silently
+-- miss the update. Append-only keeps `id` a correct, ever-advancing
+-- cursor for pull_changes at the cost of unbounded growth, acceptable
+-- at a small shop's real volume.
+CREATE TABLE IF NOT EXISTS sync_changes (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    shop_id INT NOT NULL,
+    table_name VARCHAR(40) NOT NULL,
+    row_id VARCHAR(40) NOT NULL,
+    device_id VARCHAR(64) NOT NULL,
+    local_rev INT NOT NULL,
+    -- Opaque passthrough of Dart's ISO8601 string (6-digit microsecond
+    -- precision) - never TIMESTAMP/DATETIME, which would silently
+    -- truncate the precision the phone's last-write-wins compare relies on.
+    updated_at VARCHAR(40) NOT NULL,
+    payload MEDIUMTEXT NOT NULL,
+    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (shop_id, id),
+    INDEX (shop_id, table_name, row_id),
+    FOREIGN KEY (shop_id) REFERENCES shops(id)
+);

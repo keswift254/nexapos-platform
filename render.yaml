@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: nexapos-platform
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /index.php?action=health
+    envVars:
+      # --- Aiven MySQL connection - fill in from the Aiven console ---
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        value: nexapos_platform
+      - key: DB_USER
+        sync: false
+      - key: DB_PASS
+        sync: false
+      # Path to a Secret File (Render dashboard > Environment > Secret
+      # Files) holding Aiven's CA certificate - not committed to git,
+      # not baked into the image, so it can be rotated without a rebuild.
+      - key: DB_SSL_CA
+        value: /etc/secrets/db-ca.pem
+      # --- Paystack (test key until docs/verification-checklist.md is
+      # re-run end to end against this deployment) ---
+      - key: PLATFORM_PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PLATFORM_DEFAULT_PERCENTAGE_CHARGE
+        value: "1"

@@ -1,0 +1,4 @@
+config/local.php
+config/platform.local.php
+storage/logs/*
+!storage/logs/.gitkeep

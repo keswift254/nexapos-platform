@@ -1,8 +1,23 @@
 CREATE DATABASE IF NOT EXISTS nexapos_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE nexapos_platform;
 
+-- Settlement (Paystack subaccount) lives here, not on clients - a shop
+-- has exactly one bank account regardless of which device fills the
+-- settlement form in, so every device sharing this shop sees the same
+-- settled status immediately (see save_settlement_details/client_status
+-- in public/index.php, and Auth::client()'s JOIN). A device that
+-- creates its OWN settlement independently of its shop's would silently
+-- split one shop's sales across two bank accounts.
 CREATE TABLE IF NOT EXISTS shops (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    business_name VARCHAR(160) NULL,
+    settlement_type ENUM('bank', 'mpesa') NULL,
+    bank_code VARCHAR(20) NULL,
+    account_number VARCHAR(40) NULL,
+    account_name VARCHAR(160) NULL,
+    subaccount_code VARCHAR(60) NULL UNIQUE,
+    percentage_charge DECIMAL(5,2) NULL,
+    is_verified TINYINT(1) NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -12,14 +27,9 @@ CREATE TABLE IF NOT EXISTS clients (
     device_label VARCHAR(160) NOT NULL,
     api_key_hash CHAR(64) NOT NULL UNIQUE,
     shop_id INT NOT NULL,
-    business_name VARCHAR(160) NULL,
-    settlement_type ENUM('bank', 'mpesa') NULL,
-    bank_code VARCHAR(20) NULL,
-    account_number VARCHAR(40) NULL,
-    account_name VARCHAR(160) NULL,
-    subaccount_code VARCHAR(60) NULL UNIQUE,
-    percentage_charge DECIMAL(5,2) NULL,
-    is_verified TINYINT(1) NOT NULL DEFAULT 0,
+    -- Client-scoped, unlike settlement above: only means "still within
+    -- its 10-min re-registration grace window" or "admin-disabled" - not
+    -- "settled" (that's shops.subaccount_code being non-empty).
     status ENUM('pending_settlement', 'active', 'disabled') NOT NULL DEFAULT 'pending_settlement',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -59,7 +59,13 @@ $method = $_SERVER['REQUEST_METHOD'];
 // Database::connection() above rather than skipping it, so a deploy
 // only reports healthy once the DB is actually reachable, not just PHP.
 if ($action === 'health' && $method === 'GET') {
-    jsonResponse(['success' => true, 'service' => 'nexapos_platform']);
+    // db_host is safe to expose (a hostname isn't a secret) and is the
+    // fastest way to confirm which database is actually live after a
+    // manual switch to/from the standby - see the standby runbook. Not
+    // the full DSN/credentials, just enough to tell primary from
+    // standby apart at a glance.
+    $dbConfig = require __DIR__ . '/../config/config.php';
+    jsonResponse(['success' => true, 'service' => 'nexapos_platform', 'db_host' => $dbConfig['db']['host']]);
 }
 
 if ($action === 'register_device' && $method === 'POST') {

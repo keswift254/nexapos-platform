@@ -122,7 +122,9 @@ if ($action === 'register_device' && $method === 'POST') {
         $registrationSecretHash = hash('sha256', $registrationSecret);
         $pdo->exec('INSERT INTO shops () VALUES ()');
         $shopId = (int) $pdo->lastInsertId();
-        $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, registration_secret_hash, shop_id) VALUES (?, ?, ?, ?, ?)');
+        // is_owner = 1: this device founded the shop it's about to be
+        // the sole member of - see clients.is_owner's schema comment.
+        $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, registration_secret_hash, shop_id, is_owner) VALUES (?, ?, ?, ?, ?, 1)');
         $insert->execute([$deviceId, $deviceLabel, $apiKeyHash, $registrationSecretHash, $shopId]);
     }
 
@@ -168,7 +170,15 @@ if ($action === 'join_shop' && $method === 'POST') {
     $invite->execute([$code]);
     $newShopId = (int) $invite->fetchColumn();
 
-    $update = $pdo->prepare('UPDATE clients SET shop_id = ? WHERE id = ?');
+    // is_owner reset to 0: this device is redeeming someone ELSE's
+    // invite code, so by definition it didn't found the shop it's about
+    // to join - whichever device generated the invite code did (or is
+    // itself just another non-owner peer, if ownership was never
+    // transferred - either way, this device isn't it). Without this
+    // reset, a solo device that founded its own shop (is_owner=1) could
+    // join_shop into a different, unrelated shop and incorrectly
+    // inherit owner-only settlement rights there.
+    $update = $pdo->prepare('UPDATE clients SET shop_id = ?, is_owner = 0 WHERE id = ?');
     $update->execute([$newShopId, $client['id']]);
 
     jsonResponse(['success' => true, 'shop_id' => $newShopId]);
@@ -278,6 +288,15 @@ if ($action === 'pull_changes' && $method === 'GET') {
 
 if ($action === 'save_settlement_details' && $method === 'POST') {
     $client = Auth::requireClient($pdo);
+    // Redirecting where a shop's real money gets paid out is far more
+    // consequential than the sync access every joined device needs -
+    // see clients.is_owner's schema comment for the full story. A
+    // non-owner device (anyone who joined via invite code, including a
+    // shared/leaked one) can still read settlement status via
+    // client_status, just not change it.
+    if (!$client['is_owner']) {
+        jsonResponse(['success' => false, 'message' => 'Only the device that originally set up this shop can change settlement details.'], 403);
+    }
 
     $body = requestBody();
     $businessName = trim((string) ($body['business_name'] ?? ''));
@@ -341,6 +360,10 @@ if ($action === 'client_status' && $method === 'GET') {
         'account_name' => $client['account_name'],
         'subaccount_code' => $client['subaccount_code'],
         'is_verified' => (bool) $client['is_verified'],
+        // Lets the app show/hide or disable the settlement form up
+        // front instead of a non-owner device filling it in and only
+        // then hitting save_settlement_details' 403.
+        'is_owner' => (bool) $client['is_owner'],
     ]);
 }
 

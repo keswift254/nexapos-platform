@@ -36,6 +36,19 @@ CREATE TABLE IF NOT EXISTS clients (
     -- an attacker who only knows device_id can no longer complete a
     -- re-registration. Never needed again once the grace window closes.
     registration_secret_hash CHAR(64) NULL,
+    -- TRUE only for the device that originally created this shop (see
+    -- register_device: set on the brand-new-shop INSERT path, never
+    -- touched on the re-registration UPDATE path). Every device joined
+    -- later via join_shop's invite code is an equal peer for sync
+    -- purposes but NOT for settlement - see save_settlement_details,
+    -- which now requires this. Without it, any device that ever joined
+    -- a shop (including via a leaked/shared invite code) could redirect
+    -- where that shop's real money gets paid out, with zero owner
+    -- notification - flagged in a security review, fixed here.
+    -- Deliberately not a bigger "roles" system: this is the one
+    -- specific action that needed gating, not a general permissions
+    -- model the product doesn't otherwise have.
+    is_owner TINYINT(1) NOT NULL DEFAULT 0,
     shop_id INT NOT NULL,
     -- Client-scoped, unlike settlement above: only means "still within
     -- its 10-min re-registration grace window" or "admin-disabled" - not

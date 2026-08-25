@@ -26,6 +26,16 @@ CREATE TABLE IF NOT EXISTS clients (
     device_id VARCHAR(64) NOT NULL UNIQUE,
     device_label VARCHAR(160) NOT NULL,
     api_key_hash CHAR(64) NOT NULL UNIQUE,
+    -- Proof-of-possession for the 10-min re-registration grace window
+    -- below: device_id alone used to be sufficient to rotate an
+    -- existing device's api_key, which meant anyone who merely learned
+    -- a freshly-created device's device_id (not otherwise secret - it's
+    -- a plain client-generated UUID) could hijack it. The client now
+    -- generates this alongside device_id, on first registration only,
+    -- and must present the same value again to use the grace window -
+    -- an attacker who only knows device_id can no longer complete a
+    -- re-registration. Never needed again once the grace window closes.
+    registration_secret_hash CHAR(64) NULL,
     shop_id INT NOT NULL,
     -- Client-scoped, unlike settlement above: only means "still within
     -- its 10-min re-registration grace window" or "admin-disabled" - not

@@ -72,6 +72,12 @@ if ($action === 'register_device' && $method === 'POST') {
     $body = requestBody();
     $deviceId = trim((string) ($body['device_id'] ?? ''));
     $deviceLabel = trim((string) ($body['device_label'] ?? '')) ?: 'Unnamed device';
+    // Client-generated, sent on every registration attempt for this
+    // device_id (first and any retry) - see clients.registration_secret_hash's
+    // schema comment for why this exists. Not optional: a client too
+    // old to send one simply can't use the grace-window retry path,
+    // which is the intended, safer behavior, not a bug.
+    $registrationSecret = trim((string) ($body['registration_secret'] ?? ''));
     if ($deviceId === '') {
         jsonResponse(['success' => false, 'message' => 'device_id is required.'], 422);
     }
@@ -80,9 +86,14 @@ if ($action === 'register_device' && $method === 'POST') {
     $stmt->execute([$deviceId]);
     $existing = $stmt->fetch();
 
+    $secretMatches = $existing
+        && $registrationSecret !== ''
+        && $existing['registration_secret_hash'] !== null
+        && hash_equals($existing['registration_secret_hash'], hash('sha256', $registrationSecret));
     $withinGrace = $existing
         && $existing['status'] === 'pending_settlement'
-        && (time() - strtotime((string) $existing['created_at'])) < 600;
+        && (time() - strtotime((string) $existing['created_at'])) < 600
+        && $secretMatches;
 
     if ($existing && !$withinGrace) {
         jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
@@ -92,6 +103,9 @@ if ($action === 'register_device' && $method === 'POST') {
     $apiKeyHash = hash('sha256', $apiKey);
 
     if ($existing) {
+        // registration_secret_hash is deliberately left untouched here -
+        // the same secret keeps working for any further retry within
+        // what's left of the original 10-minute window.
         $update = $pdo->prepare('UPDATE clients SET device_label = ?, api_key_hash = ? WHERE id = ?');
         $update->execute([$deviceLabel, $apiKeyHash, $existing['id']]);
     } else {
@@ -102,10 +116,14 @@ if ($action === 'register_device' && $method === 'POST') {
         // endpoint: the 409 above fires unconditionally for any device
         // outside its 10-minute grace window, before an invite code
         // would ever be read.
+        if ($registrationSecret === '') {
+            jsonResponse(['success' => false, 'message' => 'registration_secret is required.'], 422);
+        }
+        $registrationSecretHash = hash('sha256', $registrationSecret);
         $pdo->exec('INSERT INTO shops () VALUES ()');
         $shopId = (int) $pdo->lastInsertId();
-        $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, shop_id) VALUES (?, ?, ?, ?)');
-        $insert->execute([$deviceId, $deviceLabel, $apiKeyHash, $shopId]);
+        $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, registration_secret_hash, shop_id) VALUES (?, ?, ?, ?, ?)');
+        $insert->execute([$deviceId, $deviceLabel, $apiKeyHash, $registrationSecretHash, $shopId]);
     }
 
     jsonResponse(['success' => true, 'api_key' => $apiKey], 201);

@@ -207,9 +207,21 @@ if ($action === 'push_changes' && $method === 'POST') {
             ]);
         }
         $pdo->commit();
-    } catch (\Throwable $e) {
+    } catch (\RuntimeException $e) {
+        // Our own validation message (thrown just above, in this same
+        // function) - safe to show verbatim, unlike a raw DB exception.
         $pdo->rollBack();
         jsonResponse(['success' => false, 'message' => 'Could not record changes: ' . $e->getMessage()], 422);
+    } catch (\Throwable $e) {
+        // Anything else (a constraint violation, a column-too-long
+        // value, etc.) - log the real detail server-side, but don't
+        // echo it back; a PDO exception message routinely includes
+        // column/constraint/table names, which is recon-grade
+        // information disclosure to hand an authenticated-but-possibly-
+        // malicious caller for free.
+        $pdo->rollBack();
+        error_log('[nexapos_platform] push_changes failed: ' . $e->getMessage());
+        jsonResponse(['success' => false, 'message' => 'Could not record changes.'], 422);
     }
 
     jsonResponse(['success' => true, 'count' => count($changes)]);
@@ -371,11 +383,24 @@ if ($action === 'initialize_transaction' && $method === 'POST') {
     }
 
     if (($result['body']['status'] ?? false) === true) {
-        $insert = $pdo->prepare('
-            INSERT INTO transactions (client_id, reference, amount_minor, currency, subaccount_code)
-            VALUES (?, ?, ?, ?, ?)
-        ');
-        $insert->execute([$client['id'], $reference, $amount, $currency, $client['subaccount_code']]);
+        // Paystack has already created a real, chargeable session by
+        // this point - the customer must still get $result['body']'s
+        // real authorization URL back regardless of what happens here,
+        // so a failed INSERT (duplicate reference, or any other error)
+        // is logged, not thrown - losing local tracking of a real
+        // transaction is bad, but turning it into a 500 that blocks the
+        // customer from paying at all is worse. reference is UNIQUE;
+        // this is the same "catch, don't crash" shape as leads.email in
+        // nexapos_license.
+        try {
+            $insert = $pdo->prepare('
+                INSERT INTO transactions (client_id, reference, amount_minor, currency, subaccount_code)
+                VALUES (?, ?, ?, ?, ?)
+            ');
+            $insert->execute([$client['id'], $reference, $amount, $currency, $client['subaccount_code']]);
+        } catch (\Throwable $e) {
+            error_log('[nexapos_platform] Could not record transaction (reference=' . $reference . '): ' . $e->getMessage());
+        }
     }
 
     jsonResponse($result['body'], $result['http_code']);

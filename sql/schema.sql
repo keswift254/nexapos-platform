@@ -90,6 +90,21 @@ CREATE TABLE IF NOT EXISTS shop_invites (
     FOREIGN KEY (shop_id) REFERENCES shops(id)
 );
 
+-- Tracks FAILED join_shop guesses only (successes never insert here) -
+-- rate limits brute-forcing InviteCode's ~40-bit codes (see join_shop's
+-- own comment). Checked by both client_id and ip_address, since
+-- register_device is free/unlimited so client_id alone resets on
+-- request. Unbounded growth accepted at this project's real volume,
+-- same tradeoff already made for sync_changes below.
+CREATE TABLE IF NOT EXISTS join_attempts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    client_id INT NOT NULL,
+    ip_address VARCHAR(45) NOT NULL,
+    attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (client_id, attempted_at),
+    INDEX (ip_address, attempted_at)
+);
+
 -- Generic append-only relay for every SyncedColumns table on the phone
 -- (products, sales, expenses, ...) - deliberately NOT an upsert keyed on
 -- (shop_id, table_name, row_id): MySQL's ON DUPLICATE KEY UPDATE would

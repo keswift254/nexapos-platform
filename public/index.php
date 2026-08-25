@@ -139,6 +139,25 @@ if ($action === 'join_shop' && $method === 'POST') {
         jsonResponse(['success' => false, 'message' => 'invite_code is required.'], 422);
     }
 
+    // Rate limit BEFORE ever looking at the code: InviteCode's alphabet
+    // (32 chars) x length (8) is only ~40 bits, guessable given enough
+    // unthrottled attempts against a code that just needs to be valid
+    // for its 15-minute window, not globally unique forever. Checked by
+    // BOTH client_id and ip_address - register_device is free and
+    // unlimited, so client_id alone resets on request for anyone
+    // willing to mint a fresh device; ip_address is the actual backstop
+    // against that. join_attempts only ever logs failures (see below),
+    // so no legitimate device that gets its own code right the first
+    // time is ever affected by this.
+    $ip = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+    $recentByClient = $pdo->prepare('SELECT COUNT(*) FROM join_attempts WHERE client_id = ? AND attempted_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR)');
+    $recentByClient->execute([$client['id']]);
+    $recentByIp = $ip === '' ? null : $pdo->prepare('SELECT COUNT(*) FROM join_attempts WHERE ip_address = ? AND attempted_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR)');
+    $recentByIp?->execute([$ip]);
+    if ((int) $recentByClient->fetchColumn() >= 10 || ($recentByIp && (int) $recentByIp->fetchColumn() >= 10)) {
+        jsonResponse(['success' => false, 'message' => 'Too many attempts. Try again later.'], 429);
+    }
+
     // Shop-switching isn't supported once a shop has genuine co-tenants:
     // moving a device out from under peers that rely on its pushed rows
     // would orphan that data and make everyone's cursors meaningless
@@ -163,6 +182,8 @@ if ($action === 'join_shop' && $method === 'POST') {
     $claim = $pdo->prepare('UPDATE shop_invites SET used_at = UTC_TIMESTAMP() WHERE code = ? AND used_at IS NULL AND expires_at > UTC_TIMESTAMP()');
     $claim->execute([$code]);
     if ($claim->rowCount() !== 1) {
+        $log = $pdo->prepare('INSERT INTO join_attempts (client_id, ip_address) VALUES (?, ?)');
+        $log->execute([$client['id'], $ip]);
         jsonResponse(['success' => false, 'message' => 'Invalid or expired invite code.'], 422);
     }
 
@@ -197,6 +218,53 @@ if ($action === 'generate_invite' && $method === 'POST') {
     $expiresAt->execute([$code]);
 
     jsonResponse(['success' => true, 'code' => $code, 'expires_at' => $expiresAt->fetchColumn()]);
+}
+
+/**
+ * Lets the owner see every device currently in their shop, so they have
+ * something concrete to revoke_device against. Owner-only, same
+ * reasoning as save_settlement_details - device management is the other
+ * action (besides settlement) where letting any peer act would be
+ * meaningfully worse than the sync access every joined device already
+ * needs.
+ */
+if ($action === 'list_devices' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    if (!$client['is_owner']) {
+        jsonResponse(['success' => false, 'message' => 'Only the device that originally set up this shop can manage devices.'], 403);
+    }
+    $stmt = $pdo->prepare('SELECT id, device_label, is_owner, status, created_at FROM clients WHERE shop_id = ? ORDER BY id');
+    $stmt->execute([$client['shop_id']]);
+    jsonResponse(['success' => true, 'devices' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+}
+
+/**
+ * Closes the device-revocation gap flagged in the 2026-08-25 security
+ * review: until now, a lost/stolen phone or an ex-employee's device
+ * stayed a fully-trusted shop peer forever - nothing anywhere could ever
+ * move a client to 'disabled', even though Auth::requireClient already
+ * enforces that status the moment it's set (schema.sql's clients.status
+ * comment describes this as intentional, but no endpoint ever wrote it).
+ * Scoped by shop_id in the UPDATE itself, not just the is_owner check,
+ * so an owner can never revoke a device outside their own shop even by
+ * guessing/iterating client ids.
+ */
+if ($action === 'revoke_device' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    if (!$client['is_owner']) {
+        jsonResponse(['success' => false, 'message' => 'Only the device that originally set up this shop can manage devices.'], 403);
+    }
+    $body = requestBody();
+    $targetId = (int) ($body['client_id'] ?? 0);
+    if ($targetId === (int) $client['id']) {
+        jsonResponse(['success' => false, 'message' => 'You cannot revoke the device you are currently using.'], 422);
+    }
+    $update = $pdo->prepare("UPDATE clients SET status = 'disabled' WHERE id = ? AND shop_id = ? AND status != 'disabled'");
+    $update->execute([$targetId, $client['shop_id']]);
+    if ($update->rowCount() !== 1) {
+        jsonResponse(['success' => false, 'message' => 'Device not found, or already disabled.'], 404);
+    }
+    jsonResponse(['success' => true]);
 }
 
 if ($action === 'push_changes' && $method === 'POST') {

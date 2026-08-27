@@ -137,6 +137,37 @@ if ($action === 'list_all_devices' && $method === 'GET') {
     jsonResponse(['success' => true, 'devices' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
 }
 
+/**
+ * Admin action - the dashboard's "Delete" button. Same effect as the
+ * existing owner-only revoke_device (status -> 'disabled', which
+ * Auth::requireClient already enforces everywhere), not a real SQL
+ * DELETE - clients.id is referenced by transactions.client_id via a
+ * foreign key, so a hard delete would either fail outright for any
+ * device that ever took a real payment or orphan its transaction
+ * history, and would strand a shop with no owner at all if the
+ * deleted device happened to be the founding one. Unlike
+ * revoke_device, not scoped to the caller's own shop (there is no
+ * "caller's own shop" for an admin_secret-authenticated request) and
+ * has no self-revoke guard (an admin isn't authenticating as a
+ * device), so it can target any device in any shop.
+ */
+if ($action === 'admin_revoke_device' && $method === 'POST') {
+    $platformConfig = require __DIR__ . '/../config/platform.php';
+    requireAdmin($platformConfig);
+
+    $body = requestBody();
+    $clientId = (int) ($body['client_id'] ?? 0);
+    if ($clientId <= 0) {
+        jsonResponse(['success' => false, 'message' => 'client_id is required.'], 422);
+    }
+    $update = $pdo->prepare("UPDATE clients SET status = 'disabled' WHERE id = ? AND status != 'disabled'");
+    $update->execute([$clientId]);
+    if ($update->rowCount() !== 1) {
+        jsonResponse(['success' => false, 'message' => 'Device not found, or already disabled.'], 404);
+    }
+    jsonResponse(['success' => true]);
+}
+
 if ($action === 'register_device' && $method === 'POST') {
     $body = requestBody();
     $deviceId = trim((string) ($body['device_id'] ?? ''));

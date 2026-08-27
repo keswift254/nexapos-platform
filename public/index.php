@@ -46,6 +46,40 @@ function requestBody(): array
     return is_array($data) ? $data : [];
 }
 
+/**
+ * Same case-insensitive-header gotcha Auth::authorizationHeader()
+ * already documents: $_SERVER['HTTP_...'] is unset under some
+ * Apache/PHP configs, and a literal getallheaders() lookup misses
+ * lowercase header names some clients send. Mirrors nexapos_license's
+ * own headerValue() exactly.
+ */
+function headerValue(string $name): string
+{
+    $server = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+    if (!empty($_SERVER[$server])) {
+        return (string) $_SERVER[$server];
+    }
+    if (function_exists('getallheaders')) {
+        foreach (getallheaders() as $key => $value) {
+            if (strcasecmp($key, $name) === 0) {
+                return (string) $value;
+            }
+        }
+    }
+    return '';
+}
+
+/** Mirrors nexapos_license's own requireAdmin exactly - gates the one
+ * cross-shop admin action this service has (list_all_devices). */
+function requireAdmin(array $platformConfig): void
+{
+    $secret = trim(headerValue('X-Admin-Secret'));
+    $expected = (string) $platformConfig['admin_secret'];
+    if ($expected === '' || !hash_equals($expected, $secret)) {
+        jsonResponse(['success' => false, 'message' => 'Invalid or missing admin secret.'], 401);
+    }
+}
+
 set_exception_handler(function (\Throwable $e): void {
     error_log('[nexapos_platform] ' . $e->getMessage());
     jsonResponse(['success' => false, 'status' => false, 'message' => 'Server error.'], 500);
@@ -54,6 +88,19 @@ set_exception_handler(function (\Throwable $e): void {
 $pdo = Database::connection();
 $action = (string) ($_GET['action'] ?? '');
 $method = $_SERVER['REQUEST_METHOD'];
+
+// Every other action here is called by the Flutter app (not subject to
+// CORS) - list_all_devices is the first one meant to be called from a
+// browser-hosted admin page on a different origin, so this needs the
+// same permissive-but-secret-gated CORS stance nexapos_license already
+// uses for its own admin actions.
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Admin-Secret');
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+if ($method === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
 
 // Render's health check hits this - deliberately goes through
 // Database::connection() above rather than skipping it, so a deploy
@@ -66,6 +113,28 @@ if ($action === 'health' && $method === 'GET') {
     // standby apart at a glance.
     $dbConfig = require __DIR__ . '/../config/config.php';
     jsonResponse(['success' => true, 'service' => 'nexapos_platform', 'db_host' => $dbConfig['db']['host']]);
+}
+
+/**
+ * Admin action - every device across every shop, for the vendor-wide
+ * device dashboard. Unlike list_devices (owner-only, one shop's own
+ * peers), this deliberately crosses shop boundaries, so it's gated by
+ * admin_secret rather than a device's own Bearer token - there is no
+ * per-shop "owner" concept that should ever see other shops' devices.
+ */
+if ($action === 'list_all_devices' && $method === 'GET') {
+    $platformConfig = require __DIR__ . '/../config/platform.php';
+    requireAdmin($platformConfig);
+
+    $stmt = $pdo->query('
+        SELECT clients.id, clients.device_id, clients.device_label, clients.shop_id,
+               clients.is_owner, clients.status, clients.last_seen_at, clients.created_at,
+               shops.business_name
+        FROM clients
+        JOIN shops ON shops.id = clients.shop_id
+        ORDER BY clients.shop_id, clients.id
+    ');
+    jsonResponse(['success' => true, 'devices' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
 }
 
 if ($action === 'register_device' && $method === 'POST') {

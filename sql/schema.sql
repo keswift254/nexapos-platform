@@ -54,6 +54,14 @@ CREATE TABLE IF NOT EXISTS clients (
     -- its 10-min re-registration grace window" or "admin-disabled" - not
     -- "settled" (that's shops.subaccount_code being non-empty).
     status ENUM('pending_settlement', 'active', 'disabled') NOT NULL DEFAULT 'pending_settlement',
+    -- Stamped by Auth::requireClient on every authenticated call this
+    -- device makes - not a dedicated heartbeat, just piggybacking on
+    -- calls that already happen (sync runs every 2 minutes while the
+    -- app is open). Powers the admin device dashboard's online/offline
+    -- column: "online" is a client-side threshold against this, not a
+    -- stored boolean, so the definition of "recent" can change without
+    -- a migration.
+    last_seen_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX (shop_id),

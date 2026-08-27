@@ -81,6 +81,14 @@ class Auth
         if ($client['status'] === 'disabled') {
             jsonResponse(['status' => false, 'message' => 'This device has been disabled.'], 403);
         }
+        // Every authenticated call passes through here, making this the
+        // one place that can stand in for a real heartbeat without
+        // needing a separate ping endpoint - the app already calls an
+        // authenticated action (sync) on its own periodic timer every
+        // 2 minutes, so this naturally reflects real recent activity.
+        // Fire-and-forget: never worth failing an otherwise-successful
+        // request over this bookkeeping write.
+        $pdo->prepare('UPDATE clients SET last_seen_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$client['id']]);
         return $client;
     }
 }

@@ -16,6 +16,11 @@ $config = [
     'paystack_timeout' => (int) (getenv('PLATFORM_PAYSTACK_TIMEOUT') ?: 60),
     // How long a generate_invite code stays redeemable via join_shop.
     'sync_invite_expiry_minutes' => (int) (getenv('PLATFORM_SYNC_INVITE_EXPIRY_MINUTES') ?: 15),
+    // Gates list_all_devices (the cross-shop admin device dashboard) -
+    // same value as nexapos_license's admin_secret by the user's own
+    // choice, but a separate env var, so each service still owns its
+    // own config independently. Never hardcode a real value here.
+    'admin_secret' => getenv('PLATFORM_ADMIN_SECRET') ?: '',
 ];
 
 $localConfig = __DIR__ . '/platform.local.php';

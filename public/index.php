@@ -190,12 +190,24 @@ if ($action === 'register_device' && $method === 'POST') {
         && $registrationSecret !== ''
         && $existing['registration_secret_hash'] !== null
         && hash_equals($existing['registration_secret_hash'], hash('sha256', $registrationSecret));
-    $withinGrace = $existing
-        && $existing['status'] === 'pending_settlement'
-        && (time() - strtotime((string) $existing['created_at'])) < 600
-        && $secretMatches;
+    // Originally also required status = 'pending_settlement' AND being
+    // within 10 minutes of created_at - both dropped, approved by the
+    // user 2026-08-28. The secret match is what actually protects this
+    // (a 256-bit value never transmitted anywhere except this one call
+    // over HTTPS, generated once, stored only in this device's own
+    // local DB - see registration_secret_hash's own comment) - the
+    // extra time bound on top of an already-secret-gated retry wasn't
+    // adding real protection, it was just permanently locking out any
+    // device whose local secure storage lost its api_key (lost app
+    // data, a botched update, a factory reset that somehow kept the
+    // same local DB file) more than 10 minutes after its first
+    // registration. Still unconditionally blocked for a disabled
+    // (admin-revoked) device - status alone decides that, regardless of
+    // secret, so revoke_device/admin_revoke_device's guarantee that
+    // there's no way back in via the API is untouched.
+    $canRecover = $existing && $existing['status'] !== 'disabled' && $secretMatches;
 
-    if ($existing && !$withinGrace) {
+    if ($existing && !$canRecover) {
         jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
     }
 
@@ -229,6 +241,52 @@ if ($action === 'register_device' && $method === 'POST') {
     }
 
     jsonResponse(['success' => true, 'api_key' => $apiKey], 201);
+}
+
+/**
+ * Read-only recovery helper - lets a device that still has its own
+ * registration_secret (survives independently of api_key, see
+ * device_meta_table.dart in nexapos_mobile) see what it's currently
+ * registered as before deciding what to type, instead of only finding
+ * out via a 409 on submit. Same secret-match trust boundary as
+ * register_device's own recovery path. Deliberately generic on any
+ * mismatch (wrong secret OR no such device_id) so this can't be used to
+ * enumerate device_ids - device_id alone was never secret, the label/
+ * shop info behind it is what this actually protects.
+ */
+if ($action === 'registration_lookup' && $method === 'POST') {
+    $body = requestBody();
+    $deviceId = trim((string) ($body['device_id'] ?? ''));
+    $registrationSecret = trim((string) ($body['registration_secret'] ?? ''));
+
+    $notFound = static function () {
+        jsonResponse(['success' => false, 'message' => 'Not registered yet.'], 404);
+    };
+    if ($deviceId === '' || $registrationSecret === '') {
+        $notFound();
+    }
+
+    $stmt = $pdo->prepare('
+        SELECT clients.device_label, clients.status, clients.registration_secret_hash, shops.business_name
+        FROM clients JOIN shops ON shops.id = clients.shop_id
+        WHERE clients.device_id = ?
+    ');
+    $stmt->execute([$deviceId]);
+    $existing = $stmt->fetch();
+
+    $matches = $existing
+        && $existing['registration_secret_hash'] !== null
+        && hash_equals($existing['registration_secret_hash'], hash('sha256', $registrationSecret));
+    if (!$matches) {
+        $notFound();
+    }
+
+    jsonResponse([
+        'success' => true,
+        'device_label' => $existing['device_label'],
+        'business_name' => $existing['business_name'],
+        'is_disabled' => $existing['status'] === 'disabled',
+    ]);
 }
 
 if ($action === 'join_shop' && $method === 'POST') {
@@ -300,6 +358,39 @@ if ($action === 'join_shop' && $method === 'POST') {
     // join_shop into a different, unrelated shop and incorrectly
     // inherit owner-only settlement rights there.
     $update = $pdo->prepare('UPDATE clients SET shop_id = ?, is_owner = 0 WHERE id = ?');
+    $update->execute([$newShopId, $client['id']]);
+
+    jsonResponse(['success' => true, 'shop_id' => $newShopId]);
+}
+
+/**
+ * Self-service equivalent of register_device's "brand new shop" branch,
+ * for a device that's already registered and wants to detach from its
+ * current shop entirely - e.g. it was set up for the wrong shop, or a
+ * demo/test that's done. Same co-tenant guard as join_shop above, and
+ * for the identical reason documented there: this device's already-
+ * synced rows are relied on by any peer still in its CURRENT shop, so
+ * leaving one that still has other devices would orphan their sync
+ * state exactly the way switching into one would. A solo device (the
+ * common case - it's that shop's sole, founding member) has no peers to
+ * orphan, so it's always free to leave; the shop it leaves behind
+ * simply becomes permanently empty (unreachable via Auth ever again,
+ * since it then has zero clients) rather than orphaned-with-a-stranded-
+ * owner. api_key is untouched - still the same device, same credential,
+ * just a different (brand new, empty) shop_id.
+ */
+if ($action === 'leave_shop' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+
+    $coTenants = $pdo->prepare('SELECT COUNT(*) FROM clients WHERE shop_id = ?');
+    $coTenants->execute([$client['shop_id']]);
+    if ((int) $coTenants->fetchColumn() > 1) {
+        jsonResponse(['success' => false, 'message' => 'This device shares its shop with other devices - ask the shop owner to remove it from Device Management instead.'], 409);
+    }
+
+    $pdo->exec('INSERT INTO shops () VALUES ()');
+    $newShopId = (int) $pdo->lastInsertId();
+    $update = $pdo->prepare('UPDATE clients SET shop_id = ?, is_owner = 1 WHERE id = ?');
     $update->execute([$newShopId, $client['id']]);
 
     jsonResponse(['success' => true, 'shop_id' => $newShopId]);

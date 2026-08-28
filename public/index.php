@@ -168,6 +168,32 @@ if ($action === 'admin_revoke_device' && $method === 'POST') {
     jsonResponse(['success' => true]);
 }
 
+/**
+ * Same effect as admin_revoke_device, keyed by device_id instead of this
+ * service's own client_id - lets nexapos_license's revoke action cut off
+ * a device's platform/sync access when its license gets revoked,
+ * without first needing a round trip to look up its client_id. Not a
+ * general public action - still requireAdmin-gated, same as
+ * admin_revoke_device, since a caller that doesn't hold the shared
+ * admin secret has no business disabling any device this way.
+ */
+if ($action === 'admin_revoke_device_by_device_id' && $method === 'POST') {
+    $platformConfig = require __DIR__ . '/../config/platform.php';
+    requireAdmin($platformConfig);
+
+    $body = requestBody();
+    $deviceId = trim((string) ($body['device_id'] ?? ''));
+    if ($deviceId === '') {
+        jsonResponse(['success' => false, 'message' => 'device_id is required.'], 422);
+    }
+    $update = $pdo->prepare("UPDATE clients SET status = 'disabled' WHERE device_id = ? AND status != 'disabled'");
+    $update->execute([$deviceId]);
+    if ($update->rowCount() !== 1) {
+        jsonResponse(['success' => false, 'message' => 'Device not found, not registered for sync, or already disabled.'], 404);
+    }
+    jsonResponse(['success' => true]);
+}
+
 if ($action === 'register_device' && $method === 'POST') {
     $body = requestBody();
     $deviceId = trim((string) ($body['device_id'] ?? ''));

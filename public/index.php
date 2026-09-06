@@ -255,67 +255,77 @@ if ($action === 'register_device' && $method === 'POST') {
         jsonResponse(['success' => false, 'message' => 'device_id is required.'], 422);
     }
 
-    $pdo->beginTransaction();
-    $stmt = $pdo->prepare('SELECT * FROM clients WHERE device_id = ? FOR UPDATE');
-    $stmt->execute([$deviceId]);
-    $existing = $stmt->fetch();
+    // Concurrent first registrations can deadlock on the missing device row.
+    // Retry the whole transaction so recovery always rechecks the stored secret.
+    for ($registrationAttempt = 0; $registrationAttempt < 3; $registrationAttempt++) {
+        try {
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare('SELECT * FROM clients WHERE device_id = ? FOR UPDATE');
+            $stmt->execute([$deviceId]);
+            $existing = $stmt->fetch();
 
-    $secretMatches = $existing
-        && $registrationSecret !== ''
-        && $existing['registration_secret_hash'] !== null
-        && hash_equals($existing['registration_secret_hash'], hash('sha256', $registrationSecret));
-    // Originally also required status = 'pending_settlement' AND being
-    // within 10 minutes of created_at - both dropped, approved by the
-    // user 2026-08-28. The secret match is what actually protects this
-    // (a 256-bit value never transmitted anywhere except this one call
-    // over HTTPS, generated once, stored only in this device's own
-    // local DB - see registration_secret_hash's own comment) - the
-    // extra time bound on top of an already-secret-gated retry wasn't
-    // adding real protection, it was just permanently locking out any
-    // device whose local secure storage lost its api_key (lost app
-    // data, a botched update, a factory reset that somehow kept the
-    // same local DB file) more than 10 minutes after its first
-    // registration. Still unconditionally blocked for a disabled
-    // (admin-revoked) device - status alone decides that, regardless of
-    // secret, so revoke_device/admin_revoke_device's guarantee that
-    // there's no way back in via the API is untouched.
-    $canRecover = $existing && $existing['status'] !== 'disabled' && $secretMatches;
+            $secretMatches = $existing
+                && $registrationSecret !== ''
+                && $existing['registration_secret_hash'] !== null
+                && hash_equals($existing['registration_secret_hash'], hash('sha256', $registrationSecret));
+            // Originally also required status = 'pending_settlement' AND being
+            // within 10 minutes of created_at - both dropped, approved by the
+            // user 2026-08-28. The secret match is what actually protects this
+            // (a 256-bit value never transmitted anywhere except this one call
+            // over HTTPS, generated once, stored only in this device's own
+            // local DB - see registration_secret_hash's own comment) - the
+            // extra time bound on top of an already-secret-gated retry wasn't
+            // adding real protection, it was just permanently locking out any
+            // device whose local secure storage lost its api_key (lost app
+            // data, a botched update, a factory reset that somehow kept the
+            // same local DB file) more than 10 minutes after its first
+            // registration. Still unconditionally blocked for a disabled
+            // (admin-revoked) device - status alone decides that, regardless of
+            // secret, so revoke_device/admin_revoke_device's guarantee that
+            // there's no way back in via the API is untouched.
+            $canRecover = $existing && $existing['status'] !== 'disabled' && $secretMatches;
 
-    if ($existing && !$canRecover) {
-        $pdo->rollBack();
-        jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
-    }
-
-    $apiKey = bin2hex(random_bytes(32));
-    $apiKeyHash = hash('sha256', $apiKey);
-
-    try {
-        if ($existing) {
-            // registration_secret_hash is deliberately left untouched here.
-            $update = $pdo->prepare('UPDATE clients SET device_label = ?, api_key_hash = ? WHERE id = ?');
-            $update->execute([$deviceLabel, $apiKeyHash, $existing['id']]);
-        } else {
-            // Every device starts as the sole member of a brand-new shop;
-            // joining an existing shop is a separate authenticated step.
-            if ($registrationSecret === '') {
+            if ($existing && !$canRecover) {
                 $pdo->rollBack();
-                jsonResponse(['success' => false, 'message' => 'registration_secret is required.'], 422);
+                jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
             }
-            $registrationSecretHash = hash('sha256', $registrationSecret);
-            $pdo->exec('INSERT INTO shops () VALUES ()');
-            $shopId = (int) $pdo->lastInsertId();
-            $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, registration_secret_hash, shop_id, is_owner) VALUES (?, ?, ?, ?, ?, 1)');
-            $insert->execute([$deviceId, $deviceLabel, $apiKeyHash, $registrationSecretHash, $shopId]);
+
+            $apiKey = bin2hex(random_bytes(32));
+            $apiKeyHash = hash('sha256', $apiKey);
+
+            if ($existing) {
+                // registration_secret_hash is deliberately left untouched here.
+                $update = $pdo->prepare('UPDATE clients SET device_label = ?, api_key_hash = ? WHERE id = ?');
+                $update->execute([$deviceLabel, $apiKeyHash, $existing['id']]);
+            } else {
+                // Every device starts as the sole member of a brand-new shop;
+                // joining an existing shop is a separate authenticated step.
+                if ($registrationSecret === '') {
+                    $pdo->rollBack();
+                    jsonResponse(['success' => false, 'message' => 'registration_secret is required.'], 422);
+                }
+                $registrationSecretHash = hash('sha256', $registrationSecret);
+                $pdo->exec('INSERT INTO shops () VALUES ()');
+                $shopId = (int) $pdo->lastInsertId();
+                $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, registration_secret_hash, shop_id, is_owner) VALUES (?, ?, ?, ?, ?, 1)');
+                $insert->execute([$deviceId, $deviceLabel, $apiKeyHash, $registrationSecretHash, $shopId]);
+            }
+            $pdo->commit();
+            break;
+        } catch (\PDOException $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            $driverCode = (int) ($e->errorInfo[1] ?? 0);
+            if ($registrationAttempt < 2 && in_array($driverCode, [1062, 1205, 1213], true)) {
+                usleep(random_int(10000, 50000));
+                continue;
+            }
+            if ((int) $e->getCode() === 23000) {
+                jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
+            }
+            throw $e;
         }
-        $pdo->commit();
-    } catch (\PDOException $e) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-        if ((int) $e->getCode() === 23000) {
-            jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
-        }
-        throw $e;
     }
 
     jsonResponse(['success' => true, 'api_key' => $apiKey], 201);

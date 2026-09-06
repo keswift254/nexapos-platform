@@ -100,10 +100,21 @@ $race = concurrentRequests($baseUrl, [
 ]);
 $statuses = array_column($race, 'status');
 sort($statuses);
-check($statuses === [201, 201], 'Proof-of-possession retries should both succeed without creating duplicate clients.');
+check($statuses === [201, 201], 'Proof-of-possession retries should both succeed without creating duplicate clients: ' . json_encode($statuses));
 $pdo = Database::connection();
 check((int) $pdo->query("SELECT COUNT(*) FROM clients WHERE device_id = 'registration-race'")->fetchColumn() === 1, 'Concurrent registration created duplicate clients.');
 check((int) $pdo->query('SELECT COUNT(*) FROM shops')->fetchColumn() === 1, 'Concurrent registration left an orphan shop.');
+$wrongSecret = request($baseUrl, 'register_device', 'POST', [
+    'device_id' => 'registration-race',
+    'registration_secret' => 'wrong-secret',
+]);
+check($wrongSecret['status'] === 409, 'Registration recovery accepted the wrong device secret.');
+$pdo->exec("UPDATE clients SET status = 'disabled' WHERE device_id = 'registration-race'");
+$disabledRecovery = request($baseUrl, 'register_device', 'POST', [
+    'device_id' => 'registration-race',
+    'registration_secret' => 'race-secret',
+]);
+check($disabledRecovery['status'] === 409, 'Registration recovery reactivated a disabled device.');
 
 $owner = register($baseUrl, 'owner-device');
 $joinA = register($baseUrl, 'join-device-a');

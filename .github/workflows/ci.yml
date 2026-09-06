@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  php-integration:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: nexapos_platform_test
+      DB_USER: root
+      DB_PASS: root
+      NEXAPOS_IGNORE_LOCAL_CONFIG: "1"
+      PLATFORM_ADMIN_SECRET: integration-admin
+      PLATFORM_PAYSTACK_SECRET_KEY: integration-paystack-secret
+      PLATFORM_PAYSTACK_API_BASE: http://127.0.0.1:8091
+      TEST_PLATFORM_URL: http://127.0.0.1:8080/index.php
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: curl, pdo_mysql
+          coverage: none
+      - name: Lint PHP
+        run: find . -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Verify TLS fails closed
+        env:
+          DB_SSL_CA: /definitely/missing/nexapos-ca.pem
+        run: php tests/integration/tls_fail_closed.php
+      - name: Start test servers
+        run: |
+          PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8091 tests/integration/fake_paystack_router.php > /tmp/paystack.log 2>&1 &
+          PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8080 -t public public/index.php > /tmp/platform.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --silent --fail "$TEST_PLATFORM_URL?action=health" && exit 0
+            sleep 1
+          done
+          cat /tmp/platform.log
+          exit 1
+      - name: Run integration tests
+        run: php tests/integration/run.php
+      - name: Show server logs on failure
+        if: failure()
+        run: cat /tmp/platform.log /tmp/paystack.log
+      - name: Check patch whitespace
+        run: git diff --check

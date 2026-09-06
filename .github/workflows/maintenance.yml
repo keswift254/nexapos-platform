@@ -1,0 +1,19 @@
+name: Production maintenance
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run bounded retention maintenance
+        env:
+          URL: ${{ secrets.PLATFORM_MAINTENANCE_URL }}
+          ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+        run: |
+          test -n "$URL"
+          test -n "$ADMIN_SECRET"
+          curl --fail-with-body --retry 3 --request POST --header "X-Admin-Secret: $ADMIN_SECRET" "$URL"

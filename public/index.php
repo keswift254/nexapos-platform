@@ -17,6 +17,8 @@ use Platform\Core\Auth;
 use Platform\Core\Database;
 use Platform\Core\InviteCode;
 use Platform\Services\PaystackClient;
+use Platform\Services\PaymentReconciler;
+use Platform\Services\MaintenanceService;
 
 /**
  * The 10 SyncedColumns tables on the phone (see _syncedTableNames in
@@ -88,18 +90,57 @@ set_exception_handler(function (\Throwable $e): void {
 $pdo = Database::connection();
 $action = (string) ($_GET['action'] ?? '');
 $method = $_SERVER['REQUEST_METHOD'];
+$platformConfig = require __DIR__ . '/../config/platform.php';
 
 // Every other action here is called by the Flutter app (not subject to
-// CORS) - list_all_devices is the first one meant to be called from a
-// browser-hosted admin page on a different origin, so this needs the
-// same permissive-but-secret-gated CORS stance nexapos_license already
-// uses for its own admin actions.
-header('Access-Control-Allow-Origin: *');
+// CORS). The browser-hosted admin dashboard is granted only its
+// configured origin; holding the admin secret remains the real auth
+// boundary, while the origin allow-list reduces browser exposure.
+$origin = trim(headerValue('Origin'));
+$allowedOrigins = $platformConfig['cors_allowed_origins'] ?? [];
+if ($origin !== '' && in_array($origin, $allowedOrigins, true)) {
+    header('Access-Control-Allow-Origin: ' . $origin);
+    header('Vary: Origin');
+}
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Admin-Secret');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 if ($method === 'OPTIONS') {
+    if ($origin !== '' && !in_array($origin, $allowedOrigins, true)) {
+        jsonResponse(['success' => false, 'message' => 'Origin is not allowed.'], 403);
+    }
     http_response_code(204);
     exit;
+}
+
+if ($action === 'paystack_webhook' && $method === 'POST') {
+    $rawPayload = (string) file_get_contents('php://input');
+    if ($rawPayload === '' || strlen($rawPayload) > 1_048_576) {
+        jsonResponse(['success' => false, 'message' => 'Invalid webhook payload.'], 422);
+    }
+    if (!PaymentReconciler::hasValidSignature(
+        $rawPayload,
+        headerValue('X-Paystack-Signature'),
+        (string) $platformConfig['paystack_secret_key']
+    )) {
+        jsonResponse(['success' => false, 'message' => 'Invalid webhook signature.'], 401);
+    }
+
+    try {
+        $event = json_decode($rawPayload, true, 32, JSON_THROW_ON_ERROR);
+        if (!is_array($event)) {
+            throw new \RuntimeException('Webhook payload must be an object.');
+        }
+        $paystack = new PaystackClient();
+        $reconciler = new PaymentReconciler($pdo, [$paystack, 'verifyTransaction']);
+        $result = $reconciler->handleWebhook($event, $rawPayload);
+    } catch (\JsonException $e) {
+        jsonResponse(['success' => false, 'message' => 'Invalid webhook JSON.'], 422);
+    } catch (\Throwable $e) {
+        error_log('[nexapos_platform] Paystack webhook failed: ' . $e->getMessage());
+        jsonResponse(['success' => false, 'message' => 'Webhook processing will be retried.'], 503);
+    }
+
+    jsonResponse(['success' => true, 'outcome' => $result['outcome']]);
 }
 
 // Render's health check hits this - deliberately goes through
@@ -135,6 +176,12 @@ if ($action === 'list_all_devices' && $method === 'GET') {
         ORDER BY clients.shop_id, clients.id
     ');
     jsonResponse(['success' => true, 'devices' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+}
+
+if ($action === 'run_maintenance' && $method === 'POST') {
+    requireAdmin($platformConfig);
+    $deleted = (new MaintenanceService($pdo, $platformConfig))->run();
+    jsonResponse(['success' => true, 'deleted' => $deleted]);
 }
 
 /**
@@ -208,7 +255,8 @@ if ($action === 'register_device' && $method === 'POST') {
         jsonResponse(['success' => false, 'message' => 'device_id is required.'], 422);
     }
 
-    $stmt = $pdo->prepare('SELECT * FROM clients WHERE device_id = ?');
+    $pdo->beginTransaction();
+    $stmt = $pdo->prepare('SELECT * FROM clients WHERE device_id = ? FOR UPDATE');
     $stmt->execute([$deviceId]);
     $existing = $stmt->fetch();
 
@@ -234,36 +282,40 @@ if ($action === 'register_device' && $method === 'POST') {
     $canRecover = $existing && $existing['status'] !== 'disabled' && $secretMatches;
 
     if ($existing && !$canRecover) {
+        $pdo->rollBack();
         jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
     }
 
     $apiKey = bin2hex(random_bytes(32));
     $apiKeyHash = hash('sha256', $apiKey);
 
-    if ($existing) {
-        // registration_secret_hash is deliberately left untouched here -
-        // the same secret keeps working for any further retry within
-        // what's left of the original 10-minute window.
-        $update = $pdo->prepare('UPDATE clients SET device_label = ?, api_key_hash = ? WHERE id = ?');
-        $update->execute([$deviceLabel, $apiKeyHash, $existing['id']]);
-    } else {
-        // Every device starts as the sole member of a brand-new shop -
-        // joining an EXISTING shop is a separate, authenticated step
-        // (join_shop) done after registration, not a parameter here.
-        // See join_shop's own comment for why it can't live in this
-        // endpoint: the 409 above fires unconditionally for any device
-        // outside its 10-minute grace window, before an invite code
-        // would ever be read.
-        if ($registrationSecret === '') {
-            jsonResponse(['success' => false, 'message' => 'registration_secret is required.'], 422);
+    try {
+        if ($existing) {
+            // registration_secret_hash is deliberately left untouched here.
+            $update = $pdo->prepare('UPDATE clients SET device_label = ?, api_key_hash = ? WHERE id = ?');
+            $update->execute([$deviceLabel, $apiKeyHash, $existing['id']]);
+        } else {
+            // Every device starts as the sole member of a brand-new shop;
+            // joining an existing shop is a separate authenticated step.
+            if ($registrationSecret === '') {
+                $pdo->rollBack();
+                jsonResponse(['success' => false, 'message' => 'registration_secret is required.'], 422);
+            }
+            $registrationSecretHash = hash('sha256', $registrationSecret);
+            $pdo->exec('INSERT INTO shops () VALUES ()');
+            $shopId = (int) $pdo->lastInsertId();
+            $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, registration_secret_hash, shop_id, is_owner) VALUES (?, ?, ?, ?, ?, 1)');
+            $insert->execute([$deviceId, $deviceLabel, $apiKeyHash, $registrationSecretHash, $shopId]);
         }
-        $registrationSecretHash = hash('sha256', $registrationSecret);
-        $pdo->exec('INSERT INTO shops () VALUES ()');
-        $shopId = (int) $pdo->lastInsertId();
-        // is_owner = 1: this device founded the shop it's about to be
-        // the sole member of - see clients.is_owner's schema comment.
-        $insert = $pdo->prepare('INSERT INTO clients (device_id, device_label, api_key_hash, registration_secret_hash, shop_id, is_owner) VALUES (?, ?, ?, ?, ?, 1)');
-        $insert->execute([$deviceId, $deviceLabel, $apiKeyHash, $registrationSecretHash, $shopId]);
+        $pdo->commit();
+    } catch (\PDOException $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if ((int) $e->getCode() === 23000) {
+            jsonResponse(['success' => false, 'message' => 'This device is already registered.'], 409);
+        }
+        throw $e;
     }
 
     jsonResponse(['success' => true, 'api_key' => $apiKey], 201);
@@ -363,17 +415,41 @@ if ($action === 'join_shop' && $method === 'POST') {
     // Atomic claim: an UPDATE that only succeeds once, so two concurrent
     // redemptions of the same code can never both pass (no separate
     // SELECT-then-UPDATE race).
-    $claim = $pdo->prepare('UPDATE shop_invites SET used_at = UTC_TIMESTAMP() WHERE code = ? AND used_at IS NULL AND expires_at > UTC_TIMESTAMP()');
-    $claim->execute([$code]);
-    if ($claim->rowCount() !== 1) {
+    $pdo->beginTransaction();
+    try {
+        $claim = $pdo->prepare('UPDATE shop_invites SET used_at = UTC_TIMESTAMP() WHERE code = ? AND used_at IS NULL AND expires_at > UTC_TIMESTAMP()');
+        $claim->execute([$code]);
+        if ($claim->rowCount() !== 1) {
+            $pdo->rollBack();
+            $log = $pdo->prepare('INSERT INTO join_attempts (client_id, ip_address) VALUES (?, ?)');
+            $log->execute([$client['id'], $ip]);
+            jsonResponse(['success' => false, 'message' => 'Invalid or expired invite code.'], 422);
+        }
+
+        $invite = $pdo->prepare('SELECT shop_id FROM shop_invites WHERE code = ?');
+        $invite->execute([$code]);
+        $newShopId = (int) $invite->fetchColumn();
+
+        if ($newShopId <= 0 || $newShopId === (int) $client['shop_id']) {
+            $pdo->rollBack();
+            jsonResponse(['success' => false, 'message' => 'Choose an invite for a different shop.'], 422);
+        }
+
+        $update = $pdo->prepare('UPDATE clients SET shop_id = ?, is_owner = 0 WHERE id = ?');
+        $update->execute([$newShopId, $client['id']]);
+        $pdo->commit();
+    } catch (\Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+
+    if ($newShopId <= 0) {
         $log = $pdo->prepare('INSERT INTO join_attempts (client_id, ip_address) VALUES (?, ?)');
         $log->execute([$client['id'], $ip]);
         jsonResponse(['success' => false, 'message' => 'Invalid or expired invite code.'], 422);
     }
-
-    $invite = $pdo->prepare('SELECT shop_id FROM shop_invites WHERE code = ?');
-    $invite->execute([$code]);
-    $newShopId = (int) $invite->fetchColumn();
 
     // is_owner reset to 0: this device is redeeming someone ELSE's
     // invite code, so by definition it didn't found the shop it's about
@@ -383,9 +459,6 @@ if ($action === 'join_shop' && $method === 'POST') {
     // reset, a solo device that founded its own shop (is_owner=1) could
     // join_shop into a different, unrelated shop and incorrectly
     // inherit owner-only settlement rights there.
-    $update = $pdo->prepare('UPDATE clients SET shop_id = ?, is_owner = 0 WHERE id = ?');
-    $update->execute([$newShopId, $client['id']]);
-
     jsonResponse(['success' => true, 'shop_id' => $newShopId]);
 }
 
@@ -414,16 +487,28 @@ if ($action === 'leave_shop' && $method === 'POST') {
         jsonResponse(['success' => false, 'message' => 'This device shares its shop with other devices - ask the shop owner to remove it from Device Management instead.'], 409);
     }
 
-    $pdo->exec('INSERT INTO shops () VALUES ()');
-    $newShopId = (int) $pdo->lastInsertId();
-    $update = $pdo->prepare('UPDATE clients SET shop_id = ?, is_owner = 1 WHERE id = ?');
-    $update->execute([$newShopId, $client['id']]);
+    $pdo->beginTransaction();
+    try {
+        $pdo->exec('INSERT INTO shops () VALUES ()');
+        $newShopId = (int) $pdo->lastInsertId();
+        $update = $pdo->prepare('UPDATE clients SET shop_id = ?, is_owner = 1 WHERE id = ?');
+        $update->execute([$newShopId, $client['id']]);
+        $pdo->commit();
+    } catch (\Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
 
     jsonResponse(['success' => true, 'shop_id' => $newShopId]);
 }
 
 if ($action === 'generate_invite' && $method === 'POST') {
     $client = Auth::requireClient($pdo);
+    if (!(bool) $client['is_owner']) {
+        jsonResponse(['success' => false, 'message' => 'Only the shop owner can invite devices.'], 403);
+    }
     $platformConfig = require __DIR__ . '/../config/platform.php';
     $expiryMinutes = (int) $platformConfig['sync_invite_expiry_minutes'];
 
@@ -491,6 +576,10 @@ if ($action === 'push_changes' && $method === 'POST') {
     if (!is_array($changes)) {
         jsonResponse(['success' => false, 'message' => 'changes must be an array.'], 422);
     }
+    $legacyBatchLimit = max(200, min(5000, (int) ($platformConfig['sync_legacy_batch_limit'] ?? 1000)));
+    if (count($changes) > $legacyBatchLimit) {
+        jsonResponse(['success' => false, 'message' => "A sync batch may contain at most $legacyBatchLimit changes."], 413);
+    }
 
     $insert = $pdo->prepare('
         INSERT INTO sync_changes (shop_id, table_name, row_id, device_id, local_rev, updated_at, payload)
@@ -505,18 +594,38 @@ if ($action === 'push_changes' && $method === 'POST') {
         // category) always has a lower rev than a child that references
         // it (e.g. a product). Preserving push order preserves that
         // invariant for every other device's pull.
+        $encodedBytes = 0;
+        $requestByteLimit = max(1_048_576, min(67_108_864, (int) ($platformConfig['sync_request_payload_limit_bytes'] ?? 16_777_216)));
         foreach ($changes as $change) {
+            if (!is_array($change)) {
+                throw new \RuntimeException('Malformed change entry.');
+            }
             $tableName = (string) ($change['table_name'] ?? '');
             $rowId = (string) ($change['row_id'] ?? '');
             $localRev = (int) ($change['local_rev'] ?? 0);
             $updatedAt = (string) ($change['updated_at'] ?? '');
             $payload = $change['payload'] ?? null;
-            if (!in_array($tableName, SYNCED_TABLE_NAMES, true) || $rowId === '' || $updatedAt === '' || !is_array($payload)) {
+            if (!in_array($tableName, SYNCED_TABLE_NAMES, true)
+                || $rowId === '' || strlen($rowId) > 40
+                || $localRev < 1
+                || $updatedAt === '' || strlen($updatedAt) > 40
+                || !is_array($payload)
+                || (string) ($payload['id'] ?? '') !== $rowId
+                || (int) ($payload['localRev'] ?? 0) !== $localRev
+                || (string) ($payload['updatedAt'] ?? '') !== $updatedAt) {
                 throw new \RuntimeException('Malformed change entry.');
+            }
+            $encodedPayload = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            if (strlen($encodedPayload) > 262144) {
+                throw new \RuntimeException('Change payload is too large.');
+            }
+            $encodedBytes += strlen($encodedPayload);
+            if ($encodedBytes > $requestByteLimit) {
+                throw new \RuntimeException('Sync request payload is too large.');
             }
             $insert->execute([
                 $client['shop_id'], $tableName, $rowId, $client['device_id'], $localRev, $updatedAt,
-                json_encode($payload, JSON_UNESCAPED_SLASHES),
+                $encodedPayload,
             ]);
         }
         $pdo->commit();
@@ -537,12 +646,12 @@ if ($action === 'push_changes' && $method === 'POST') {
         jsonResponse(['success' => false, 'message' => 'Could not record changes.'], 422);
     }
 
-    jsonResponse(['success' => true, 'count' => count($changes)]);
+    jsonResponse(['success' => true, 'count' => count($changes), 'recommended_batch_size' => 200]);
 }
 
 if ($action === 'pull_changes' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
-    $since = (int) ($_GET['since'] ?? 0);
+    $since = max(0, (int) ($_GET['since'] ?? 0));
 
     $stmt = $pdo->prepare('
         SELECT id, table_name, row_id, device_id, local_rev, updated_at, payload
@@ -637,6 +746,7 @@ if ($action === 'client_status' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
     jsonResponse([
         'success' => true,
+        'shop_id' => (int) $client['shop_id'],
         'status' => $client['status'],
         'business_name' => $client['business_name'],
         'settlement_type' => $client['settlement_type'],
@@ -739,38 +849,22 @@ if ($action === 'verify_transaction' && $method === 'GET') {
         jsonResponse(['status' => false, 'message' => 'reference is required.'], 422);
     }
 
-    // Scoped to the calling client - a reference that exists but belongs
-    // to a different client must look identical to one that doesn't
-    // exist at all. This is the fix for the cross-client verify leak:
-    // Paystack's own verify endpoint has no concept of subaccount
-    // ownership, so that check has to happen here, before ever calling
-    // Paystack, not after.
-    $stmt = $pdo->prepare('SELECT * FROM transactions WHERE reference = ? AND client_id = ?');
-    $stmt->execute([$reference, $client['id']]);
-    $transaction = $stmt->fetch();
-    if (!$transaction) {
-        jsonResponse(['status' => false, 'message' => 'Transaction not found.'], 404);
-    }
-
     try {
-        $result = (new PaystackClient())->verifyTransaction($reference);
+        $paystack = new PaystackClient();
+        $reconciler = new PaymentReconciler($pdo, [$paystack, 'verifyTransaction']);
+        $verification = $reconciler->verifyForClient($reference, (int) $client['id']);
     } catch (\Throwable $e) {
         jsonResponse(['status' => false, 'message' => 'Could not reach Paystack: ' . $e->getMessage()], 502);
     }
 
-    $paystackStatus = strtolower((string) ($result['body']['data']['status'] ?? ''));
-    if ($paystackStatus === 'success') {
-        $localStatus = 'verified_success';
-    } elseif (in_array($paystackStatus, ['failed', 'abandoned', 'reversed'], true)) {
-        $localStatus = 'verified_failed';
-    } else {
-        $localStatus = null; // still pending - leave the local record as 'initialized'
+    if ($verification['outcome'] === 'not_found') {
+        jsonResponse(['status' => false, 'message' => 'Transaction not found.'], 404);
     }
-    if ($localStatus !== null) {
-        $update = $pdo->prepare('UPDATE transactions SET status = ?, verified_at = NOW() WHERE id = ?');
-        $update->execute([$localStatus, $transaction['id']]);
+    if ($verification['outcome'] === 'mismatch') {
+        jsonResponse(['status' => false, 'message' => 'Transaction verification details did not match the original request.'], 409);
     }
 
+    $result = $verification['paystack_result'];
     jsonResponse($result['body'], $result['http_code']);
 }
 

@@ -17,7 +17,7 @@ $config = [
 ];
 
 $localConfig = __DIR__ . '/local.php';
-if (is_file($localConfig)) {
+if (getenv('NEXAPOS_IGNORE_LOCAL_CONFIG') !== '1' && is_file($localConfig)) {
     $config = array_replace_recursive($config, require $localConfig);
 }
 

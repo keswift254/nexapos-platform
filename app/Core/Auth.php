@@ -88,7 +88,11 @@ class Auth
         // 2 minutes, so this naturally reflects real recent activity.
         // Fire-and-forget: never worth failing an otherwise-successful
         // request over this bookkeeping write.
-        $pdo->prepare('UPDATE clients SET last_seen_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$client['id']]);
+        try {
+            $pdo->prepare('UPDATE clients SET last_seen_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$client['id']]);
+        } catch (\Throwable $e) {
+            error_log('[nexapos_platform] Could not update last_seen_at: ' . $e->getMessage());
+        }
         return $client;
     }
 }

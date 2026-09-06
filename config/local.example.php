@@ -10,5 +10,6 @@ return [
         'user' => 'root',
         'pass' => '',
         'charset' => 'utf8mb4',
+        'ssl_ca' => null,
     ],
 ];

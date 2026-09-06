@@ -82,6 +82,25 @@ CREATE TABLE IF NOT EXISTS transactions (
     FOREIGN KEY (client_id) REFERENCES clients(id)
 );
 
+-- Idempotency ledger for Paystack callbacks. Only hashes and the small
+-- amount of routing metadata needed for reconciliation are retained;
+-- full webhook payloads can contain customer/payment details and are
+-- deliberately not copied into this database.
+CREATE TABLE IF NOT EXISTS paystack_webhook_events (
+    event_key VARCHAR(190) NOT NULL PRIMARY KEY,
+    event_type VARCHAR(80) NOT NULL,
+    reference VARCHAR(60) NOT NULL,
+    payload_sha256 CHAR(64) NOT NULL,
+    status ENUM('received', 'processing', 'processed', 'ignored', 'failed') NOT NULL DEFAULT 'received',
+    attempts INT NOT NULL DEFAULT 1,
+    last_error VARCHAR(500) NULL,
+    received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP NULL,
+    INDEX (reference),
+    INDEX (status, updated_at)
+);
+
 -- Phase 2 sync: a shop is the grouping that lets multiple devices (phones
 -- + the counter PC) share one dataset. shop_invites is how a second
 -- device joins an existing shop (a time-limited code, see join_shop in

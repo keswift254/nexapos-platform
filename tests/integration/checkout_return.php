@@ -7,6 +7,10 @@ putenv('NEXAPOS_IGNORE_LOCAL_CONFIG=1');
 putenv('PLATFORM_PAYSTACK_SECRET_KEY=checkout-test-only');
 // This test only contacts the local fake Paystack server started by the test runner.
 putenv('PLATFORM_PAYSTACK_API_BASE=http://127.0.0.1:18089');
+$config = require __DIR__ . '/../../config/platform.php';
+if ($config['paystack_api_base'] !== 'http://127.0.0.1:18089' || $config['paystack_secret_key'] !== 'checkout-test-only') {
+    throw new RuntimeException('Tests require the local fake Paystack configuration.');
+}
 $client = new Platform\Services\PaystackClient();
 foreach ([false, true] as $returnToApp) {
     $response = $client->initializeTransaction(1234, 'TEST-CALLBACK', 'test@example.com', 'KES', 'ACCT_TEST', ['source' => 'test'], $returnToApp);

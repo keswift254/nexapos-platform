@@ -52,16 +52,20 @@ class PaystackClient
         ]);
     }
 
-    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata): array
+    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false): array
     {
-        return $this->request('POST', '/transaction/initialize', [
+        $payload = [
             'email' => $email,
             'amount' => $amountMinor,
             'currency' => $currency,
             'reference' => $reference,
             'subaccount' => $subaccountCode,
             'metadata' => $metadata,
-        ]);
+        ];
+        if ($returnToApp) {
+            $payload['callback_url'] = 'https://keswift254.github.io/nexapos-site/checkout-return.html';
+        }
+        return $this->request('POST', '/transaction/initialize', $payload);
     }
 
     public function verifyTransaction(string $reference): array

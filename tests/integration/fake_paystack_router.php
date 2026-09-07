@@ -2,6 +2,10 @@
 
 header('Content-Type: application/json');
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '';
+if ($path === '/transaction/initialize') {
+    echo json_encode(['status' => true, 'data' => json_decode(file_get_contents('php://input'), true)]);
+    return;
+}
 if (preg_match('#/transaction/verify/([^/]+)$#', $path, $matches) === 1) {
     $reference = rawurldecode($matches[1]);
     echo json_encode([

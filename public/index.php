@@ -713,7 +713,7 @@ if ($action === 'save_settlement_details' && $method === 'POST') {
     }
 
     $platformConfig = require __DIR__ . '/../config/platform.php';
-    $percentageCharge = (float) $platformConfig['default_percentage_charge'];
+    $percentageCharge = 0.0;
     $existingSubaccountCode = (string) ($client['subaccount_code'] ?? '');
 
     try {

@@ -60,6 +60,8 @@ class PaystackClient
             'currency' => $currency,
             'reference' => $reference,
             'subaccount' => $subaccountCode,
+            'transaction_charge' => 0,
+            'bearer' => 'subaccount',
             'metadata' => $metadata,
         ];
         if ($returnToApp) {

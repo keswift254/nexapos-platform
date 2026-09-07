@@ -6,12 +6,8 @@
 $config = [
     'paystack_api_base' => getenv('PLATFORM_PAYSTACK_API_BASE') ?: 'https://api.paystack.co',
     'paystack_secret_key' => getenv('PLATFORM_PAYSTACK_SECRET_KEY') ?: '',
-    // The platform's cut, as a percentage (Paystack's percentage_charge
-    // field) - this is a business decision, not a technical default.
-    // 10 is a placeholder only. See docs/verification-checklist.md item 1
-    // before trusting this value with real money: confirm empirically
-    // which side (platform vs subaccount) actually receives this share.
-    'default_percentage_charge' => (float) (getenv('PLATFORM_DEFAULT_PERCENTAGE_CHARGE') ?: 10),
+    // NexaPOS commission is zero; initialization also overrides older subaccount splits.
+    'default_percentage_charge' => 0.0,
     'paystack_connect_timeout' => (int) (getenv('PLATFORM_PAYSTACK_CONNECT_TIMEOUT') ?: 25),
     'paystack_timeout' => (int) (getenv('PLATFORM_PAYSTACK_TIMEOUT') ?: 60),
     // How long a generate_invite code stays redeemable via join_shop.

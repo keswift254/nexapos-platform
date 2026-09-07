@@ -15,6 +15,9 @@ $client = new Platform\Services\PaystackClient();
 foreach ([false, true] as $returnToApp) {
     $response = $client->initializeTransaction(1234, 'TEST-CALLBACK', 'test@example.com', 'KES', 'ACCT_TEST', ['source' => 'test'], $returnToApp);
     $payload = $response['body']['data'];
+    if (($payload['transaction_charge'] ?? -1) !== 0 || ($payload['bearer'] ?? '') !== 'subaccount') {
+        throw new RuntimeException('Merchant payments must have zero platform commission.');
+    }
     if ($payload['amount'] !== 1234 || $payload['subaccount'] !== 'ACCT_TEST') {
         throw new RuntimeException('Payment amount or settlement account changed.');
     }

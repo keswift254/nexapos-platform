@@ -138,6 +138,11 @@ check($peerInvite['status'] === 403, 'A joined device must not invite other devi
 $membership = request($baseUrl, 'client_status', 'GET', null, ['Authorization: Bearer ' . $joinedKey]);
 check($membership['status'] === 200 && (int) ($membership['body']['shop_id'] ?? 0) > 0,
     'Client status must identify the shop for interrupted-change recovery.');
+$joinedLeave = request($baseUrl, 'leave_shop', 'POST', [], ['Authorization: Bearer ' . $joinedKey]);
+check($joinedLeave['status'] === 200, 'A non-owner device must be able to leave a shared shop safely.');
+$leftMembership = request($baseUrl, 'client_status', 'GET', null, ['Authorization: Bearer ' . $joinedKey]);
+check($leftMembership['status'] === 200 && ($leftMembership['body']['is_owner'] ?? false) === true,
+    'A departed device must own its new empty shop.');
 
 $oversized = array_fill(0, 1001, []);
 $tooLarge = request($baseUrl, 'push_changes', 'POST', ['changes' => $oversized], ['Authorization: Bearer ' . $ownerKey]);

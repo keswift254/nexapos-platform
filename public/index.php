@@ -493,8 +493,8 @@ if ($action === 'leave_shop' && $method === 'POST') {
 
     $coTenants = $pdo->prepare('SELECT COUNT(*) FROM clients WHERE shop_id = ?');
     $coTenants->execute([$client['shop_id']]);
-    if ((int) $coTenants->fetchColumn() > 1) {
-        jsonResponse(['success' => false, 'message' => 'This device shares its shop with other devices - ask the shop owner to remove it from Device Management instead.'], 409);
+    if ((int) $coTenants->fetchColumn() > 1 && (bool) $client['is_owner']) {
+        jsonResponse(['success' => false, 'message' => 'The owner cannot leave while other devices belong to this shop. Remove those devices first.'], 409);
     }
 
     $pdo->beginTransaction();

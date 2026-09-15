@@ -21,6 +21,7 @@ use Platform\Services\PaymentReconciler;
 use Platform\Services\IntaSendClient;
 use Platform\Services\IntaSendReconciler;
 use Platform\Services\MaintenanceService;
+use Platform\Services\SyncSnapshot;
 
 /**
  * The 10 SyncedColumns tables on the phone (see _syncedTableNames in
@@ -673,6 +674,8 @@ if ($action === 'push_changes' && $method === 'POST') {
         // category) always has a lower rev than a child that references
         // it (e.g. a product). Preserving push order preserves that
         // invariant for every other device's pull.
+        $shopLock = $pdo->prepare('SELECT id FROM shops WHERE id = ? FOR UPDATE');
+        $shopLock->execute([$client['shop_id']]);
         $encodedBytes = 0;
         $requestByteLimit = max(1_048_576, min(67_108_864, (int) ($platformConfig['sync_request_payload_limit_bytes'] ?? 16_777_216)));
         foreach ($changes as $change) {
@@ -726,6 +729,26 @@ if ($action === 'push_changes' && $method === 'POST') {
     }
 
     jsonResponse(['success' => true, 'count' => count($changes), 'recommended_batch_size' => 200]);
+}
+
+if ($action === 'start_sync_snapshot' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    jsonResponse(['success' => true] + SyncSnapshot::start($pdo, $client));
+}
+
+if ($action === 'discard_sync_snapshot' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $delete = $pdo->prepare('DELETE FROM sync_snapshots WHERE id = ? AND client_id = ? AND shop_id = ?');
+    $delete->execute([(string) ($body['snapshot_id'] ?? ''), $client['id'], $client['shop_id']]);
+    jsonResponse(['success' => true]);
+}
+
+if ($action === 'pull_sync_snapshot' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    $snapshot = SyncSnapshot::page($pdo, $client, (string) ($_GET['snapshot_id'] ?? ''), max(0, (int) ($_GET['after'] ?? 0)));
+    if ($snapshot === null) jsonResponse(['success' => false, 'message' => 'Initial sync snapshot expired. Retry to resume with a fresh snapshot.'], 410);
+    jsonResponse(['success' => true] + $snapshot);
 }
 
 if ($action === 'pull_changes' && $method === 'GET') {

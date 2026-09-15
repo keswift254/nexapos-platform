@@ -55,6 +55,8 @@ jobs:
           exit 1
       - name: Run integration tests
         run: php tests/integration/run.php
+      - name: Verify initial sync snapshots
+        run: php tests/integration/sync_snapshot.php
       - name: Show server logs on failure
         if: failure()
         run: cat /tmp/platform.log /tmp/paystack.log

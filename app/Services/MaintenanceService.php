@@ -16,6 +16,7 @@ final class MaintenanceService
         $maxBatches = max(1, min(100, (int) ($this->config['maintenance_max_batches'] ?? 10)));
 
         return [
+            'sync_snapshots' => $this->deleteOlderThan('sync_snapshots', 'expires_at', 0, $batchSize, $maxBatches),
             'sync_changes' => $this->compactSyncChanges(
                 max(7, (int) ($this->config['sync_history_retention_days'] ?? 90)),
                 $batchSize,
@@ -55,6 +56,7 @@ final class MaintenanceService
                        AND newer.row_id = older.row_id
                        AND newer.id > older.id
                     WHERE older.received_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL $retentionDays DAY)
+                      AND NOT EXISTS (SELECT 1 FROM sync_snapshot_rows r WHERE r.change_id = older.id)
                     ORDER BY older.id
                     LIMIT $batchSize
                 ) stale

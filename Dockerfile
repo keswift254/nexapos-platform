@@ -8,6 +8,10 @@ RUN apt-get update \
 
 RUN echo "display_errors=Off" > /usr/local/etc/php/conf.d/production-errors.ini
 
+# Allow Apache to read Render's runtime secret files.
+RUN if ! getent group 1000 >/dev/null; then groupadd --gid 1000 render-secrets; fi \
+    && usermod --append --groups 1000 www-data
+
 COPY . /var/www/html/
 
 # Document root is public/, not the repo root - config/, app/, sql/ stay

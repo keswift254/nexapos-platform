@@ -640,7 +640,7 @@ if ($action === 'list_devices' && $method === 'GET') {
     if (!$client['is_owner']) {
         jsonResponse(['success' => false, 'message' => 'Only the device that originally set up this shop can manage devices.'], 403);
     }
-    $stmt = $pdo->prepare('SELECT id, device_label, is_owner, status, created_at FROM clients WHERE shop_id = ? ORDER BY id');
+    $stmt = $pdo->prepare('SELECT id, device_label, is_owner, status, created_at, last_seen_at FROM clients WHERE shop_id = ? ORDER BY id');
     $stmt->execute([$client['shop_id']]);
     jsonResponse(['success' => true, 'devices' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
 }

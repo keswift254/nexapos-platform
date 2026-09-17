@@ -304,6 +304,31 @@ if ($action === 'admin_revoke_device_by_device_id' && $method === 'POST') {
     jsonResponse(['success' => true]);
 }
 
+/**
+ * Admin action - the dashboard's "Revoke shop" button. Disables every
+ * device belonging to the given shop in one call (same 'disabled'
+ * status admin_revoke_device already uses per-device) - there is no
+ * separate shop-level active/inactive flag, a shop's real access is
+ * entirely defined by whether any of its devices can still
+ * authenticate, so cutting off a shop just means cutting off all of
+ * them at once. Zero devices actually revoked (already all disabled,
+ * or a shop with none) is still success, not an error - unlike
+ * admin_revoke_device there's no single expected target row to miss.
+ */
+if ($action === 'admin_revoke_shop' && $method === 'POST') {
+    $platformConfig = require __DIR__ . '/../config/platform.php';
+    requireAdmin($platformConfig);
+
+    $body = requestBody();
+    $shopId = (int) ($body['shop_id'] ?? 0);
+    if ($shopId <= 0) {
+        jsonResponse(['success' => false, 'message' => 'shop_id is required.'], 422);
+    }
+    $update = $pdo->prepare("UPDATE clients SET status = 'disabled' WHERE shop_id = ? AND status != 'disabled'");
+    $update->execute([$shopId]);
+    jsonResponse(['success' => true, 'devices_revoked' => $update->rowCount()]);
+}
+
 if ($action === 'register_device' && $method === 'POST') {
     $body = requestBody();
     $deviceId = trim((string) ($body['device_id'] ?? ''));

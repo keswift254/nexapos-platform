@@ -9,7 +9,65 @@ use PDO;
 /** Immutable change IDs keep pagination stable while the shop keeps trading. */
 final class SyncSnapshot
 {
+    /**
+     * Split into a short reservation transaction plus an unlocked build
+     * phase - it used to do everything (including the possibly-slow
+     * row-population pass below) inside one transaction holding the
+     * shops row's FOR UPDATE lock the whole time. A client that gives
+     * up on a slow first attempt (its own request timeout) and retries
+     * would then queue up blocked behind that same lock instead of
+     * either reusing progress or failing fast - confirmed as the real
+     * cause of a very slow (tens of minutes) first sync, each futile
+     * retry cycle paying its own full timeout on top of the last.
+     * ready_at (see its own migration) is what lets a reservation that
+     * exists but isn't populated yet be told apart from one that's
+     * actually safe to page through.
+     */
     public static function start(PDO $pdo, array $client): array
+    {
+        $reservation = self::reserve($pdo, $client);
+        if ($reservation['ready']) return $reservation['metadata'];
+
+        // Outside the lock and outside any transaction now - highWater
+        // (captured inside reserve()) is already fixed and immutable, so
+        // this can take as long as it genuinely needs (a shop with a lot
+        // of history) without holding up push_changes or another
+        // device's own start_sync_snapshot for the same shop.
+        $snapshotId = $reservation['snapshot_id'];
+        $highWater = $reservation['high_water'];
+        // Match the app exactly: append-only rows take their first event;
+        // mutable rows use bytewise (updatedAt, createdByDeviceId), with
+        // the first event winning an exact tie. Never use newest ID alone.
+        $select = $pdo->prepare("INSERT INTO sync_snapshot_rows(snapshot_id, change_id)
+            SELECT ?, id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY BINARY table_name, BINARY row_id
+                    ORDER BY
+                        CASE WHEN table_name IN ('sale_items','stock_movements') THEN id ELSE NULL END ASC,
+                        CASE WHEN table_name NOT IN ('sale_items','stock_movements') THEN BINARY updated_at ELSE NULL END DESC,
+                        CASE WHEN table_name NOT IN ('sale_items','stock_movements') THEN BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.createdByDeviceId')), '') ELSE NULL END DESC,
+                        id ASC
+                ) AS winner
+                FROM sync_changes WHERE shop_id = ? AND id <= ?
+            ) ranked WHERE winner = 1");
+        $select->execute([$snapshotId, $client['shop_id'], $highWater]);
+        $count = $select->rowCount();
+        $update = $pdo->prepare('UPDATE sync_snapshots SET row_count = ?, ready_at = UTC_TIMESTAMP() WHERE id = ?');
+        $update->execute([$count, $snapshotId]);
+        return ['snapshot_id' => $snapshotId, 'high_water' => $highWater, 'total' => $count];
+    }
+
+    /**
+     * Fast path only: reuse an already-ready snapshot, or reserve a
+     * fresh one and hand back [snapshotId, highWater] for start() to
+     * populate afterward, unlocked. A reservation left behind by an
+     * abandoned attempt (this same client's own request that never came
+     * back - the exact scenario this whole split exists for) is simply
+     * discarded rather than resumed: cheap to redo given how fast the
+     * reservation itself is, and far simpler than trying to tell "still
+     * genuinely being built elsewhere" apart from "died mid-build".
+     */
+    private static function reserve(PDO $pdo, array $client): array
     {
         $pdo->beginTransaction();
         try {
@@ -17,11 +75,11 @@ final class SyncSnapshot
             // appear after the high-water mark has been captured.
             $lock = $pdo->prepare('SELECT id FROM shops WHERE id = ? FOR UPDATE');
             $lock->execute([$client['shop_id']]);
-            $existing = $pdo->prepare('SELECT * FROM sync_snapshots WHERE client_id = ? AND shop_id = ? AND expires_at > UTC_TIMESTAMP() ORDER BY expires_at DESC LIMIT 1');
+            $existing = $pdo->prepare('SELECT * FROM sync_snapshots WHERE client_id = ? AND shop_id = ? AND ready_at IS NOT NULL AND expires_at > UTC_TIMESTAMP() ORDER BY expires_at DESC LIMIT 1');
             $existing->execute([$client['id'], $client['shop_id']]);
             if ($snapshot = $existing->fetch(PDO::FETCH_ASSOC)) {
                 $pdo->commit();
-                return self::metadata($snapshot);
+                return ['ready' => true, 'metadata' => self::metadata($snapshot)];
             }
             $cleanup = $pdo->prepare('DELETE FROM sync_snapshots WHERE client_id = ?');
             $cleanup->execute([$client['id']]);
@@ -31,27 +89,8 @@ final class SyncSnapshot
             $id = bin2hex(random_bytes(16));
             $create = $pdo->prepare('INSERT INTO sync_snapshots(id, client_id, shop_id, high_water, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR))');
             $create->execute([$id, $client['id'], $client['shop_id'], $highWater]);
-            // Match the app exactly: append-only rows take their first event;
-            // mutable rows use bytewise (updatedAt, createdByDeviceId), with
-            // the first event winning an exact tie. Never use newest ID alone.
-            $select = $pdo->prepare("INSERT INTO sync_snapshot_rows(snapshot_id, change_id)
-                SELECT ?, id FROM (
-                    SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY BINARY table_name, BINARY row_id
-                        ORDER BY
-                            CASE WHEN table_name IN ('sale_items','stock_movements') THEN id ELSE NULL END ASC,
-                            CASE WHEN table_name NOT IN ('sale_items','stock_movements') THEN BINARY updated_at ELSE NULL END DESC,
-                            CASE WHEN table_name NOT IN ('sale_items','stock_movements') THEN BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.createdByDeviceId')), '') ELSE NULL END DESC,
-                            id ASC
-                    ) AS winner
-                    FROM sync_changes WHERE shop_id = ? AND id <= ?
-                ) ranked WHERE winner = 1");
-            $select->execute([$id, $client['shop_id'], $highWater]);
-            $count = $select->rowCount();
-            $update = $pdo->prepare('UPDATE sync_snapshots SET row_count = ? WHERE id = ?');
-            $update->execute([$count, $id]);
             $pdo->commit();
-            return ['snapshot_id' => $id, 'high_water' => $highWater, 'total' => $count];
+            return ['ready' => false, 'snapshot_id' => $id, 'high_water' => $highWater];
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
             throw $e;
@@ -60,7 +99,7 @@ final class SyncSnapshot
 
     public static function page(PDO $pdo, array $client, string $id, int $after): ?array
     {
-        $lookup = $pdo->prepare('SELECT * FROM sync_snapshots WHERE id = ? AND client_id = ? AND shop_id = ? AND expires_at > UTC_TIMESTAMP()');
+        $lookup = $pdo->prepare('SELECT * FROM sync_snapshots WHERE id = ? AND client_id = ? AND shop_id = ? AND ready_at IS NOT NULL AND expires_at > UTC_TIMESTAMP()');
         $lookup->execute([$id, $client['id'], $client['shop_id']]);
         $snapshot = $lookup->fetch(PDO::FETCH_ASSOC);
         if (!$snapshot) return null;

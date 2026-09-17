@@ -221,6 +221,11 @@ CREATE TABLE IF NOT EXISTS sync_snapshots (
     shop_id INT NOT NULL,
     high_water BIGINT NOT NULL,
     row_count INT NOT NULL DEFAULT 0,
+    -- NULL until SyncSnapshot::start()'s (possibly slow) row-population
+    -- pass finishes - see this column's own migration comment. A
+    -- snapshot row existing at all no longer means it's safe to page
+    -- through; only a non-null ready_at does.
+    ready_at DATETIME NULL,
     expires_at DATETIME NOT NULL,
     INDEX (client_id, expires_at),
     FOREIGN KEY (client_id) REFERENCES clients(id),

@@ -1,0 +1,15 @@
+-- SyncSnapshot::start() used to hold the shops row's FOR UPDATE lock for
+-- the entire snapshot build, including the potentially slow window-
+-- function pass over sync_changes that decides which row wins per
+-- table_name/row_id. A client that gives up (its own request timeout)
+-- and retries while that first attempt is still running server-side
+-- would queue up behind the same lock, and each futile retry cycle
+-- added its own full timeout-plus-retry-delay on top - a real,
+-- reproduced cause of a very slow first sync. ready_at lets start()
+-- release the lock immediately after reserving the snapshot row (fast),
+-- do the slow population afterward with no lock held at all, and mark
+-- completion explicitly - a concurrent retry can then tell "reserved
+-- but not populated yet" apart from "actually ready to page through",
+-- instead of either blocking on the old lock or (worse) treating an
+-- unpopulated snapshot as a legitimate zero-row one.
+ALTER TABLE sync_snapshots ADD COLUMN ready_at DATETIME NULL AFTER row_count;

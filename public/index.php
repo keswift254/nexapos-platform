@@ -776,6 +776,26 @@ if ($action === 'pull_sync_snapshot' && $method === 'GET') {
     jsonResponse(['success' => true] + $snapshot);
 }
 
+if ($action === 'start_sync_snapshot' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    jsonResponse(['success' => true] + SyncSnapshot::start($pdo, $client));
+}
+
+if ($action === 'discard_sync_snapshot' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $delete = $pdo->prepare('DELETE FROM sync_snapshots WHERE id = ? AND client_id = ? AND shop_id = ?');
+    $delete->execute([(string) ($body['snapshot_id'] ?? ''), $client['id'], $client['shop_id']]);
+    jsonResponse(['success' => true]);
+}
+
+if ($action === 'pull_sync_snapshot' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    $snapshot = SyncSnapshot::page($pdo, $client, (string) ($_GET['snapshot_id'] ?? ''), max(0, (int) ($_GET['after'] ?? 0)));
+    if ($snapshot === null) jsonResponse(['success' => false, 'message' => 'Initial sync snapshot expired. Retry to resume with a fresh snapshot.'], 410);
+    jsonResponse(['success' => true] + $snapshot);
+}
+
 if ($action === 'pull_changes' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
     $since = max(0, (int) ($_GET['since'] ?? 0));

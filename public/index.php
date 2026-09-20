@@ -777,7 +777,12 @@ if ($action === 'push_changes' && $method === 'POST') {
 
 if ($action === 'start_sync_snapshot' && $method === 'POST') {
     $client = Auth::requireClient($pdo);
-    jsonResponse(['success' => true] + SyncSnapshot::start($pdo, $client));
+    $snapshot = SyncSnapshot::start($pdo, $client);
+    if (!empty($snapshot['building'])) {
+        // Not an error: the app shows this text and asks again in a few seconds.
+        jsonResponse(['success' => false, 'building' => true, 'message' => 'The shop download is still being prepared on the server. This can take a minute or two the first time for a shop with a long history - it will keep trying.'], 409);
+    }
+    jsonResponse(['success' => true] + $snapshot);
 }
 
 if ($action === 'discard_sync_snapshot' && $method === 'POST') {

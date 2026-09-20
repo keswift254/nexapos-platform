@@ -27,6 +27,13 @@ final class SyncSnapshot
     {
         $reservation = self::reserve($pdo, $client);
         if ($reservation['ready']) return $reservation['metadata'];
+        // Another request is still building it - the caller shows "still preparing" and asks again.
+        if (!empty($reservation['building'])) return ['building' => true];
+
+        // The build must finish even if the app that asked for it has already timed out and
+        // disconnected; otherwise its next attempt would find nothing and pay the whole cost again.
+        ignore_user_abort(true);
+        if (function_exists('set_time_limit')) @set_time_limit(0);
 
         // Outside the lock and outside any transaction now - highWater
         // (captured inside reserve()) is already fixed and immutable, so
@@ -50,10 +57,20 @@ final class SyncSnapshot
                 ) AS winner
                 FROM sync_changes WHERE shop_id = ? AND id <= ?
             ) ranked WHERE winner = 1");
-        $select->execute([$snapshotId, $client['shop_id'], $highWater]);
-        $count = $select->rowCount();
-        $update = $pdo->prepare('UPDATE sync_snapshots SET row_count = ?, ready_at = UTC_TIMESTAMP() WHERE id = ?');
-        $update->execute([$count, $snapshotId]);
+        try {
+            $select->execute([$snapshotId, $client['shop_id'], $highWater]);
+            $count = $select->rowCount();
+            $update = $pdo->prepare('UPDATE sync_snapshots SET row_count = ?, ready_at = UTC_TIMESTAMP() WHERE id = ?');
+            $update->execute([$count, $snapshotId]);
+        } catch (\Throwable $e) {
+            // A failed build must not leave a reservation that looks "still building" for
+            // the next ten minutes and blocks every retry.
+            try {
+                $pdo->prepare('DELETE FROM sync_snapshots WHERE id = ?')->execute([$snapshotId]);
+            } catch (\Throwable $ignored) {
+            }
+            throw $e;
+        }
         return ['snapshot_id' => $snapshotId, 'high_water' => $highWater, 'total' => $count];
     }
 
@@ -80,6 +97,18 @@ final class SyncSnapshot
             if ($snapshot = $existing->fetch(PDO::FETCH_ASSOC)) {
                 $pdo->commit();
                 return ['ready' => true, 'metadata' => self::metadata($snapshot)];
+            }
+            // This same device's snapshot is ALREADY being built by an earlier request
+            // (started within the last 10 minutes: expires_at is creation + 24 h). Do not
+            // throw it away and start over. Doing so is what made a big shop's first
+            // download loop forever: the app gives up after its timeout and retries, every
+            // retry discarded the half-finished work and began again, and the abandoned
+            // builds kept running on the database and slowed the new one down.
+            $building = $pdo->prepare('SELECT 1 FROM sync_snapshots WHERE client_id = ? AND shop_id = ? AND ready_at IS NULL AND expires_at > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1430 MINUTE) LIMIT 1');
+            $building->execute([$client['id'], $client['shop_id']]);
+            if ($building->fetchColumn()) {
+                $pdo->commit();
+                return ['ready' => false, 'building' => true];
             }
             $cleanup = $pdo->prepare('DELETE FROM sync_snapshots WHERE client_id = ?');
             $cleanup->execute([$client['id']]);

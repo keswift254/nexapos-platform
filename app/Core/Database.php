@@ -32,7 +32,7 @@ class Database
             self::bootstrapDatabase($db);
             self::$connection = self::newPdo($dsn, $db);
         }
-        self::runMigrations(self::$connection);
+        self::runMigrations(self::$connection, $db);
         return self::$connection;
     }
 
@@ -126,8 +126,35 @@ class Database
         return '`' . str_replace('`', '``', $identifier) . '`';
     }
 
-    private static function runMigrations(PDO $pdo): void
+    /**
+     * How long a "migrations are up to date" note is trusted before the
+     * database is asked again (see runMigrations).
+     */
+    private const MIGRATION_NOTE_TTL_SECONDS = 6 * 3600;
+
+    private static function runMigrations(PDO $pdo, array $db): void
     {
+        $paths = glob(__DIR__ . '/../../sql/migrations/*.sql') ?: [];
+        sort($paths, SORT_STRING);
+
+        // This used to run on EVERY request: CREATE TABLE, SELECT DATABASE(),
+        // GET_LOCK, one "already applied?" query PER migration file, RELEASE_LOCK.
+        // With the database in another data centre each of those round trips costs
+        // real time, and together they added ~4 seconds to every single API call -
+        // including each page of a shop's first download. Once this process has seen
+        // every migration applied it leaves a small note in the temp directory (keyed
+        // by database and by the exact list of migration files, so a new migration
+        // invalidates it) and later requests skip all of it. The note expires after a
+        // few hours so a database restored from an old backup gets re-checked.
+        $note = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'nexapos_platform_schema_' . sha1(
+            ($db['host'] ?? '') . '|' . ($db['port'] ?? '') . '|' . ($db['name'] ?? '') . '|'
+            . implode(',', array_map('basename', $paths))
+        );
+        $noteTime = @filemtime($note);
+        if ($noteTime !== false && (time() - $noteTime) < self::MIGRATION_NOTE_TTL_SECONDS) {
+            return;
+        }
+
         $pdo->exec('CREATE TABLE IF NOT EXISTS schema_migrations (
             name VARCHAR(190) NOT NULL PRIMARY KEY,
             applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -142,14 +169,12 @@ class Database
         }
 
         try {
-            $paths = glob(__DIR__ . '/../../sql/migrations/*.sql') ?: [];
-            sort($paths, SORT_STRING);
-            $exists = $pdo->prepare('SELECT COUNT(*) FROM schema_migrations WHERE name = ?');
+            // One query for the whole applied list, not one per migration file.
+            $applied = array_flip($pdo->query('SELECT name FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN));
             $record = $pdo->prepare('INSERT INTO schema_migrations (name) VALUES (?)');
             foreach ($paths as $path) {
                 $name = basename($path);
-                $exists->execute([$name]);
-                if ((int) $exists->fetchColumn() > 0) {
+                if (isset($applied[$name])) {
                     continue;
                 }
                 $sql = file_get_contents($path);
@@ -161,6 +186,7 @@ class Database
                 }
                 $record->execute([$name]);
             }
+            @file_put_contents($note, gmdate('c'));
         } finally {
             $release = $pdo->prepare('SELECT RELEASE_LOCK(?)');
             $release->execute([$lockName]);

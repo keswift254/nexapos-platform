@@ -64,4 +64,28 @@ $expire->execute([$snapshot['snapshot_id']]);
 verify(SyncSnapshot::page($pdo, $client, $snapshot['snapshot_id'], 0) === null, 'Expired snapshots must be rejected.');
 $replacement = SyncSnapshot::start($pdo, $client);
 verify($replacement['snapshot_id'] !== $snapshot['snapshot_id'] && $replacement['total'] === 507, 'Retry after expiry must capture new records.');
-echo "Snapshot integration tests passed (5,511 history events reduced to 506 records).\n";
+// --- A build already in progress must not be thrown away by the app's retry ------------------
+$pdo->exec("INSERT INTO shops(business_name) VALUES ('Snapshot building test')");
+$shop2 = (int) $pdo->lastInsertId();
+$token2 = bin2hex(random_bytes(8));
+$pdo->prepare("INSERT INTO clients(device_id, device_label, api_key_hash, shop_id) VALUES (?, 'Building test', ?, ?)")
+    ->execute(['building-' . $token2, hash('sha256', $token2), $shop2]);
+$client2 = ['id' => (int) $pdo->lastInsertId(), 'shop_id' => $shop2];
+$pdo->prepare('INSERT INTO sync_changes(shop_id, table_name, row_id, device_id, local_rev, updated_at, payload) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    ->execute([$shop2, 'categories', 'only-row', 'dev', 1, $stamp, json_encode(['id' => 'only-row', 'updatedAt' => $stamp, 'createdByDeviceId' => 'a'])]);
+// Exactly what reserve() leaves behind while a request is still populating it (created just now).
+$pdo->prepare('INSERT INTO sync_snapshots(id, client_id, shop_id, high_water, expires_at) VALUES (?, ?, ?, 0, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR))')
+    ->execute(['inprogress' . str_repeat('0', 22), $client2['id'], $shop2]);
+$answer = SyncSnapshot::start($pdo, $client2);
+verify(($answer['building'] ?? false) === true, 'A fresh in-progress build must be reported as still building.');
+$left = $pdo->prepare('SELECT COUNT(*) FROM sync_snapshots WHERE client_id = ? AND id = ?');
+$left->execute([$client2['id'], 'inprogress' . str_repeat('0', 22)]);
+verify((int) $left->fetchColumn() === 1, 'The in-progress reservation must NOT be discarded and restarted by a retry.');
+// An abandoned one (older than 10 minutes: expires_at is creation + 24 h) is replaced by a real build.
+$pdo->prepare('UPDATE sync_snapshots SET expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 23 HOUR) WHERE client_id = ?')->execute([$client2['id']]);
+$rebuilt = SyncSnapshot::start($pdo, $client2);
+verify(isset($rebuilt['snapshot_id']) && $rebuilt['snapshot_id'] !== 'inprogress' . str_repeat('0', 22) && $rebuilt['total'] === 1, 'A stale reservation must be replaced by a fresh build.');
+$left->execute([$client2['id'], 'inprogress' . str_repeat('0', 22)]);
+verify((int) $left->fetchColumn() === 0, 'The stale reservation must be cleaned up.');
+verify(SyncSnapshot::start($pdo, $client2) === $rebuilt, 'Once built, a retry still gets the same ready snapshot.');
+echo "Snapshot integration tests passed (5,511 history events reduced to 506 records; in-progress builds survive retries).\n";

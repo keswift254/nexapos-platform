@@ -722,6 +722,25 @@ if ($action === 'push_changes' && $method === 'POST') {
                 || (string) ($payload['updatedAt'] ?? '') !== $updatedAt) {
                 throw new \RuntimeException('Malformed change entry.');
             }
+            // updated_at is what last-write-wins compares (as text) across
+            // every device in the shop, so a value far in the future beats
+            // every correct edit made afterwards - permanently, since
+            // nobody's real clock ever catches up to it. Two ways that
+            // happens for real: a PC whose dead CMOS battery reset its
+            // clock to the wrong year, and someone forging it on purpose.
+            // A day of tolerance covers ordinary drift and any
+            // timezone-labelling slip (max UTC offset is 14h) while still
+            // catching a wrong year or month; the failure is loud (the
+            // device's sync error names its clock) instead of silently
+            // corrupting every other device's data.
+            try {
+                $changeTime = new \DateTimeImmutable($updatedAt, new \DateTimeZone('UTC'));
+            } catch (\Throwable $e) {
+                throw new \RuntimeException('Change has an unreadable timestamp.');
+            }
+            if ($changeTime->getTimestamp() > time() + 86400) {
+                throw new \RuntimeException('Change is dated more than a day in the future - check this device\'s date and time.');
+            }
             $encodedPayload = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
             if (strlen($encodedPayload) > 262144) {
                 throw new \RuntimeException('Change payload is too large.');

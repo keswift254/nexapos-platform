@@ -152,6 +152,24 @@ $oversized = array_fill(0, 1001, []);
 $tooLarge = request($baseUrl, 'push_changes', 'POST', ['changes' => $oversized], ['Authorization: Bearer ' . $ownerKey]);
 check($tooLarge['status'] === 413, 'Legacy sync hard ceiling was not enforced.');
 
+// A wrong-year device clock (or a forged stamp) must not be able to poison
+// last-write-wins for the whole shop.
+$change = static fn (string $rowId, string $stamp): array => [
+    'table_name' => 'categories', 'row_id' => $rowId, 'local_rev' => 1, 'updated_at' => $stamp,
+    'payload' => ['id' => $rowId, 'localRev' => 1, 'updatedAt' => $stamp],
+];
+$farFuture = gmdate('Y-m-d\TH:i:s', time() + 5 * 365 * 86400) . '.000000Z';
+$futurePush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('clock-future', $farFuture)]], ['Authorization: Bearer ' . $ownerKey]);
+check($futurePush['status'] === 422 && str_contains((string) ($futurePush['body']['message'] ?? ''), 'future'),
+    'A change dated years ahead was accepted: ' . $futurePush['raw']);
+$garbagePush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('clock-garbage', 'zzzz')]], ['Authorization: Bearer ' . $ownerKey]);
+check($garbagePush['status'] === 422, 'A non-timestamp updated_at was accepted (it sorts after every real date).');
+$nowPush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('clock-ok', gmdate('Y-m-d\TH:i:s') . '.123456Z')]], ['Authorization: Bearer ' . $ownerKey]);
+check($nowPush['status'] === 200, 'A correctly-stamped change was rejected: ' . $nowPush['raw']);
+$slightlyAhead = gmdate('Y-m-d\TH:i:s', time() + 3 * 3600) . '.000000Z';
+$driftPush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('clock-drift', $slightlyAhead)]], ['Authorization: Bearer ' . $ownerKey]);
+check($driftPush['status'] === 200, 'Ordinary clock drift (3 hours ahead) must still sync: ' . $driftPush['raw']);
+
 $ownerId = (int) $pdo->query("SELECT id FROM clients WHERE device_id = 'owner-device'")->fetchColumn();
 $insertTransaction = $pdo->prepare("INSERT INTO transactions
     (client_id, reference, amount_minor, currency, subaccount_code)

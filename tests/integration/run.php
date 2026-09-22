@@ -137,11 +137,61 @@ $joinStatuses = array_column($joinRace, 'status');
 sort($joinStatuses);
 check($joinStatuses === [200, 422], 'Exactly one concurrent invite claim must succeed.');
 $joinedKey = $joinRace[0]['status'] === 200 ? $joinA['body']['api_key'] : $joinB['body']['api_key'];
+$joinedDeviceId = $joinRace[0]['status'] === 200 ? 'join-device-a' : 'join-device-b';
 $peerInvite = request($baseUrl, 'generate_invite', 'POST', [], ['Authorization: Bearer ' . $joinedKey]);
 check($peerInvite['status'] === 403, 'A joined device must not invite other devices.');
 $membership = request($baseUrl, 'client_status', 'GET', null, ['Authorization: Bearer ' . $joinedKey]);
 check($membership['status'] === 200 && (int) ($membership['body']['shop_id'] ?? 0) > 0,
     'Client status must identify the shop for interrupted-change recovery.');
+$ownerLan = request($baseUrl, 'lan_sync_credentials', 'GET', null, ['Authorization: Bearer ' . $ownerKey]);
+$joinedLan = request($baseUrl, 'lan_sync_credentials', 'GET', null, ['Authorization: Bearer ' . $joinedKey]);
+check($ownerLan['status'] === 200 && $joinedLan['status'] === 200
+    && base64_decode((string) $ownerLan['body']['secret'], true) !== false
+    && strlen((string) base64_decode((string) $ownerLan['body']['secret'], true)) === 32
+    && $ownerLan['body']['secret'] === $joinedLan['body']['secret'],
+    'Native peers in one shop must receive the same 256-bit LAN key.');
+
+$relayStamp = gmdate('Y-m-d\TH:i:s') . '.654321Z';
+$relayChange = [
+    'source_device_id' => $joinedDeviceId,
+    'table_name' => 'categories',
+    'row_id' => 'lan-relay-row',
+    'local_rev' => 77,
+    'updated_at' => $relayStamp,
+    'payload' => [
+        'id' => 'lan-relay-row',
+        'localRev' => 77,
+        'updatedAt' => $relayStamp,
+        'createdByDeviceId' => $joinedDeviceId,
+    ],
+];
+$relayPush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$relayChange]], ['Authorization: Bearer ' . $ownerKey]);
+check($relayPush['status'] === 200, 'An active same-shop native peer could not relay a LAN change: ' . $relayPush['raw']);
+$relayRetry = request($baseUrl, 'push_changes', 'POST', ['changes' => [$relayChange]], ['Authorization: Bearer ' . $ownerKey]);
+check($relayRetry['status'] === 200
+    && (int) $pdo->query("SELECT COUNT(*) FROM sync_changes WHERE device_id = '$joinedDeviceId' AND local_rev = 77")->fetchColumn() === 1,
+    'Relayed source/local revision was not deduplicated.');
+$conflictingRelay = $relayChange;
+$conflictingRelay['row_id'] = 'lan-relay-conflict';
+$conflictingRelay['payload']['id'] = 'lan-relay-conflict';
+check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$conflictingRelay]], ['Authorization: Bearer ' . $ownerKey])['status'] === 422,
+    'A conflicting replay of the same source revision was accepted.');
+$inactiveRelay = $relayChange;
+$inactiveRelay['local_rev'] = 78;
+$inactiveRelay['payload']['localRev'] = 78;
+$pdo->prepare("UPDATE clients SET status = 'disabled' WHERE device_id = ?")->execute([$joinedDeviceId]);
+check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$inactiveRelay]], ['Authorization: Bearer ' . $ownerKey])['status'] === 422,
+    'A relay attributed to a disabled source device was accepted.');
+$pdo->prepare("UPDATE clients SET status = 'active' WHERE device_id = ?")->execute([$joinedDeviceId]);
+
+$otherNative = register($baseUrl, 'other-shop-native', 'native');
+$crossShopRelay = $relayChange;
+$crossShopRelay['source_device_id'] = 'other-shop-native';
+$crossShopRelay['local_rev'] = 1;
+$crossShopRelay['payload']['createdByDeviceId'] = 'other-shop-native';
+$crossShopRelay['payload']['localRev'] = 1;
+check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$crossShopRelay]], ['Authorization: Bearer ' . $ownerKey])['status'] === 422,
+    'A relay attributed to a device from another shop was accepted.');
 $joinedLeave = request($baseUrl, 'leave_shop', 'POST', [], ['Authorization: Bearer ' . $joinedKey]);
 check($joinedLeave['status'] === 200, 'A non-owner device must be able to leave a shared shop safely.');
 $leftMembership = request($baseUrl, 'client_status', 'GET', null, ['Authorization: Bearer ' . $joinedKey]);
@@ -154,10 +204,19 @@ check($tooLarge['status'] === 413, 'Legacy sync hard ceiling was not enforced.')
 
 // A wrong-year device clock (or a forged stamp) must not be able to poison
 // last-write-wins for the whole shop.
-$change = static fn (string $rowId, string $stamp): array => [
-    'table_name' => 'categories', 'row_id' => $rowId, 'local_rev' => 1, 'updated_at' => $stamp,
-    'payload' => ['id' => $rowId, 'localRev' => 1, 'updatedAt' => $stamp],
-];
+$nextRevision = 0;
+$change = static function (string $rowId, string $stamp) use (&$nextRevision): array {
+    $revision = ++$nextRevision;
+    return [
+        'table_name' => 'categories', 'row_id' => $rowId, 'local_rev' => $revision, 'updated_at' => $stamp,
+        'payload' => [
+            'id' => $rowId,
+            'localRev' => $revision,
+            'updatedAt' => $stamp,
+            'createdByDeviceId' => 'owner-device',
+        ],
+    ];
+};
 $farFuture = gmdate('Y-m-d\TH:i:s', time() + 5 * 365 * 86400) . '.000000Z';
 $futurePush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('clock-future', $farFuture)]], ['Authorization: Bearer ' . $ownerKey]);
 check($futurePush['status'] === 422 && str_contains((string) ($futurePush['body']['message'] ?? ''), 'future'),
@@ -187,10 +246,10 @@ check(request($baseUrl, 'paystack_webhook', 'POST', $event, ['X-Paystack-Signatu
 
 $pdo->prepare("INSERT INTO sync_changes (shop_id, table_name, row_id, device_id, local_rev, updated_at, payload, received_at)
     VALUES ((SELECT shop_id FROM clients WHERE id = ?), 'categories', 'compact-row', 'owner-device', ?, ?, ?, DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 DAY))")
-    ->execute([$ownerId, 1, '2026-01-01T00:00:00Z', '{"id":"compact-row"}']);
+    ->execute([$ownerId, 1001, '2026-01-01T00:00:00Z', '{"id":"compact-row"}']);
 $pdo->prepare("INSERT INTO sync_changes (shop_id, table_name, row_id, device_id, local_rev, updated_at, payload, received_at)
     VALUES ((SELECT shop_id FROM clients WHERE id = ?), 'categories', 'compact-row', 'owner-device', ?, ?, ?, DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 DAY))")
-    ->execute([$ownerId, 2, '2026-01-02T00:00:00Z', '{"id":"compact-row"}']);
+    ->execute([$ownerId, 1002, '2026-01-02T00:00:00Z', '{"id":"compact-row"}']);
 $pdo->prepare("INSERT INTO join_attempts (client_id, ip_address, attempted_at) VALUES (?, '127.0.0.2', DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 DAY))")
     ->execute([$ownerId]);
 $maintenance = new MaintenanceService($pdo, [
@@ -213,6 +272,9 @@ check($deleted['join_attempts'] >= 1, 'Old join attempts were not pruned.');
 $browserOwner = register($baseUrl, 'browser-owner-device', 'browser');
 check($browserOwner['status'] === 201, 'Could not register the browser-channel fixture.');
 $browserKey = $browserOwner['body']['api_key'];
+$browserLan = request($baseUrl, 'lan_sync_credentials', 'GET', null, ['Authorization: Bearer ' . $browserKey]);
+check($browserLan['status'] === 403 && !array_key_exists('secret', $browserLan['body']),
+    'A browser client was given LAN sync credentials.');
 $browserStatus = request($baseUrl, 'client_status', 'GET', null, ['Authorization: Bearer ' . $browserKey]);
 check($browserStatus['status'] === 200 && ($browserStatus['body']['is_owner'] ?? false) === true,
     'A freshly registered device must own its own new shop, regardless of channel.');

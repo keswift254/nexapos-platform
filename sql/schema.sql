@@ -10,6 +10,10 @@ USE nexapos_platform;
 -- split one shop's sales across two bank accounts.
 CREATE TABLE IF NOT EXISTS shops (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    -- Server-issued shared secret for authenticated native-only LAN sync.
+    -- Browsers are never returned this value; native clients keep it in
+    -- OS secure storage and use it only as an AES-256-GCM key.
+    lan_sync_secret BINARY(32) NULL,
     business_name VARCHAR(160) NULL,
     settlement_type ENUM('bank', 'mpesa') NULL,
     bank_code VARCHAR(20) NULL,
@@ -212,6 +216,7 @@ CREATE TABLE IF NOT EXISTS sync_changes (
     received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX (shop_id, id),
     INDEX (shop_id, table_name, row_id),
+    UNIQUE KEY uq_sync_source_revision (shop_id, device_id, local_rev),
     FOREIGN KEY (shop_id) REFERENCES shops(id)
 );
 

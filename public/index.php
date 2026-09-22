@@ -696,17 +696,6 @@ if ($action === 'push_changes' && $method === 'POST') {
         INSERT INTO sync_changes (shop_id, table_name, row_id, device_id, local_rev, updated_at, payload)
         VALUES (?, ?, ?, ?, ?, ?, ?)
     ');
-    $existingRevision = $pdo->prepare('
-        SELECT table_name, row_id, updated_at, payload
-        FROM sync_changes
-        WHERE shop_id = ? AND device_id = ? AND local_rev = ?
-        LIMIT 1
-    ');
-    $sourceClient = $pdo->prepare('
-        SELECT id FROM clients
-        WHERE shop_id = ? AND device_id = ? AND channel = \'native\' AND status != \'disabled\'
-        LIMIT 1
-    ');
 
     $pdo->beginTransaction();
     try {
@@ -719,7 +708,6 @@ if ($action === 'push_changes' && $method === 'POST') {
         $shopLock = $pdo->prepare('SELECT id FROM shops WHERE id = ? FOR UPDATE');
         $shopLock->execute([$client['shop_id']]);
         $encodedBytes = 0;
-        $validatedRelaySources = [];
         $requestByteLimit = max(1_048_576, min(67_108_864, (int) ($platformConfig['sync_request_payload_limit_bytes'] ?? 16_777_216)));
         foreach ($changes as $change) {
             if (!is_array($change)) {
@@ -730,30 +718,15 @@ if ($action === 'push_changes' && $method === 'POST') {
             $localRev = (int) ($change['local_rev'] ?? 0);
             $updatedAt = (string) ($change['updated_at'] ?? '');
             $payload = $change['payload'] ?? null;
-            $sourceDeviceId = trim((string) ($change['source_device_id'] ?? $client['device_id']));
             if (!in_array($tableName, SYNCED_TABLE_NAMES, true)
                 || $rowId === '' || strlen($rowId) > 40
-                || $sourceDeviceId === '' || strlen($sourceDeviceId) > 64
                 || $localRev < 1
                 || $updatedAt === '' || strlen($updatedAt) > 40
                 || !is_array($payload)
                 || (string) ($payload['id'] ?? '') !== $rowId
                 || (int) ($payload['localRev'] ?? 0) !== $localRev
-                || (string) ($payload['createdByDeviceId'] ?? '') !== $sourceDeviceId
                 || (string) ($payload['updatedAt'] ?? '') !== $updatedAt) {
                 throw new \RuntimeException('Malformed change entry.');
-            }
-            if ($sourceDeviceId !== (string) $client['device_id']) {
-                if ($client['channel'] !== 'native') {
-                    throw new \RuntimeException('Browser clients cannot relay LAN changes.');
-                }
-                if (!isset($validatedRelaySources[$sourceDeviceId])) {
-                    $sourceClient->execute([$client['shop_id'], $sourceDeviceId]);
-                    if (!$sourceClient->fetchColumn()) {
-                        throw new \RuntimeException('Relayed source device is not active in this shop.');
-                    }
-                    $validatedRelaySources[$sourceDeviceId] = true;
-                }
             }
             // updated_at is what last-write-wins compares (as text) across
             // every device in the shop, so a value far in the future beats
@@ -782,19 +755,8 @@ if ($action === 'push_changes' && $method === 'POST') {
             if ($encodedBytes > $requestByteLimit) {
                 throw new \RuntimeException('Sync request payload is too large.');
             }
-            $existingRevision->execute([$client['shop_id'], $sourceDeviceId, $localRev]);
-            $existing = $existingRevision->fetch(PDO::FETCH_ASSOC);
-            if ($existing) {
-                if ($existing['table_name'] !== $tableName
-                    || $existing['row_id'] !== $rowId
-                    || $existing['updated_at'] !== $updatedAt
-                    || json_decode((string) $existing['payload'], true) != $payload) {
-                    throw new \RuntimeException('A source revision was already recorded with different content.');
-                }
-                continue;
-            }
             $insert->execute([
-                $client['shop_id'], $tableName, $rowId, $sourceDeviceId, $localRev, $updatedAt,
+                $client['shop_id'], $tableName, $rowId, $client['device_id'], $localRev, $updatedAt,
                 $encodedPayload,
             ]);
         }
@@ -817,40 +779,6 @@ if ($action === 'push_changes' && $method === 'POST') {
     }
 
     jsonResponse(['success' => true, 'count' => count($changes), 'recommended_batch_size' => 200]);
-}
-
-if ($action === 'lan_sync_credentials' && $method === 'GET') {
-    $client = Auth::requireClient($pdo);
-    if ($client['channel'] !== 'native') {
-        jsonResponse(['success' => false, 'message' => 'LAN sync credentials are available only to native clients.'], 403);
-    }
-
-    $secret = $client['lan_sync_secret'];
-    if (!is_string($secret) || strlen($secret) !== 32) {
-        $pdo->beginTransaction();
-        try {
-            $select = $pdo->prepare('SELECT lan_sync_secret FROM shops WHERE id = ? FOR UPDATE');
-            $select->execute([$client['shop_id']]);
-            $secret = $select->fetchColumn();
-            if (!is_string($secret) || strlen($secret) !== 32) {
-                $secret = random_bytes(32);
-                $pdo->prepare('UPDATE shops SET lan_sync_secret = ? WHERE id = ?')
-                    ->execute([$secret, $client['shop_id']]);
-            }
-            $pdo->commit();
-        } catch (\Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            error_log('[nexapos_platform] LAN key creation failed: ' . $e->getMessage());
-            jsonResponse(['success' => false, 'message' => 'Could not prepare LAN synchronization.'], 500);
-        }
-    }
-
-    jsonResponse([
-        'success' => true,
-        'shop_id' => (int) $client['shop_id'],
-        'device_id' => (string) $client['device_id'],
-        'secret' => base64_encode($secret),
-    ]);
 }
 
 if ($action === 'start_sync_snapshot' && $method === 'POST') {

@@ -35,8 +35,7 @@ class Auth
         $stmt = $pdo->prepare('
             SELECT clients.*, shops.business_name, shops.settlement_type, shops.bank_code,
                    shops.account_number, shops.account_name, shops.subaccount_code,
-                   shops.percentage_charge, shops.is_verified, shops.intasend_wallet_id,
-                   shops.lan_sync_secret
+                   shops.percentage_charge, shops.is_verified, shops.intasend_wallet_id
             FROM clients
             JOIN shops ON shops.id = clients.shop_id
             WHERE clients.api_key_hash = ?

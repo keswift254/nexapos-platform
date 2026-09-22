@@ -450,7 +450,7 @@ if ($action === 'registration_lookup' && $method === 'POST') {
     }
 
     $stmt = $pdo->prepare('
-        SELECT clients.device_label, clients.status, clients.registration_secret_hash, shops.business_name
+        SELECT clients.device_label, clients.status, clients.registration_secret_hash, clients.is_owner, shops.business_name
         FROM clients JOIN shops ON shops.id = clients.shop_id
         WHERE clients.device_id = ?
     ');
@@ -469,6 +469,12 @@ if ($action === 'registration_lookup' && $method === 'POST') {
         'device_label' => $existing['device_label'],
         'business_name' => $existing['business_name'],
         'is_disabled' => $existing['status'] === 'disabled',
+        // Lets the app decide, before the person types anything, whether to offer a
+        // no-code Reconnect (a device that joined someone else's shop) or point this
+        // device at its license key instead (the device that founded its own shop -
+        // register_device/client_status already refuse to reconnect it, but only
+        // after a round trip, so the join screen could not avoid showing the button).
+        'is_owner' => (bool) $existing['is_owner'],
     ]);
 }
 

@@ -29,12 +29,31 @@ DEALLOCATE PREPARE nexapos_add_lan_secret_stmt;
 -- Older clients could retry an already-accepted revision after losing the
 -- HTTP response. Keep the earliest copy before enforcing source/revision
 -- idempotency for native LAN relays.
-DELETE newer FROM sync_changes newer
-JOIN sync_changes older
-  ON older.shop_id = newer.shop_id
- AND older.device_id = newer.device_id
- AND older.local_rev = newer.local_rev
- AND older.id < newer.id;
+--
+-- Do not use a self-join over sync_changes here. Production reached this
+-- statement without a supporting (shop_id, device_id, local_rev) index, so
+-- the self-join could run for long enough to hold the migration advisory lock
+-- while every Render health probe timed out. Stage only duplicate keys in a
+-- temporary table, index that small set, then make one pass over sync_changes.
+-- Temporary tables are connection-scoped, so this remains safe after a
+-- process is killed midway through the migration and the file is retried.
+DROP TEMPORARY TABLE IF EXISTS nexapos_duplicate_sync_revisions;
+CREATE TEMPORARY TABLE nexapos_duplicate_sync_revisions AS
+SELECT shop_id, device_id, local_rev, MIN(id) AS keep_id
+FROM sync_changes
+GROUP BY shop_id, device_id, local_rev
+HAVING COUNT(*) > 1;
+ALTER TABLE nexapos_duplicate_sync_revisions
+    ADD PRIMARY KEY (shop_id, device_id, local_rev);
+
+DELETE duplicate_row FROM sync_changes duplicate_row
+JOIN nexapos_duplicate_sync_revisions duplicate_key
+  ON duplicate_key.shop_id = duplicate_row.shop_id
+ AND duplicate_key.device_id = duplicate_row.device_id
+ AND duplicate_key.local_rev = duplicate_row.local_rev
+WHERE duplicate_row.id <> duplicate_key.keep_id;
+
+DROP TEMPORARY TABLE nexapos_duplicate_sync_revisions;
 
 ALTER TABLE sync_changes
     ADD UNIQUE KEY uq_sync_source_revision (shop_id, device_id, local_rev);

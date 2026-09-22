@@ -21,8 +21,9 @@ $create = $pdo->prepare("INSERT INTO clients(device_id, device_label, api_key_ha
 $create->execute(['snapshot-' . $token, hash('sha256', $token), $shop]);
 $client = ['id' => (int) $pdo->lastInsertId(), 'shop_id' => $shop];
 $insert = $pdo->prepare('INSERT INTO sync_changes(shop_id, table_name, row_id, device_id, local_rev, updated_at, payload) VALUES (?, ?, ?, ?, ?, ?, ?)');
-$event = function(string $table, string $row, string $stamp, string $device, string $value) use ($insert, $pdo, $shop): int {
-    $insert->execute([$shop, $table, $row, 'relay-device', 1, $stamp,
+$revision = 0;
+$event = function(string $table, string $row, string $stamp, string $device, string $value) use ($insert, $pdo, $shop, &$revision): int {
+    $insert->execute([$shop, $table, $row, 'relay-device', ++$revision, $stamp,
         json_encode(['id' => $row, 'updatedAt' => $stamp, 'createdByDeviceId' => $device, 'value' => $value])]);
     return (int) $pdo->lastInsertId();
 };

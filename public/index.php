@@ -305,6 +305,33 @@ if ($action === 'admin_revoke_device_by_device_id' && $method === 'POST') {
 }
 
 /**
+ * Inverse of admin_revoke_device_by_device_id - lets nexapos_license's
+ * unrevoke action give a device its platform/sync access back once its
+ * license has been reinstated (a revoke by mistake, or a dispute that got
+ * resolved). Only ever touches a device that is currently 'disabled', and
+ * puts it back to 'active' - the state a normal, in-good-standing device is
+ * in - so this can never disturb a device that was never revoked. Same
+ * requireAdmin gate as the revoke it undoes: nothing that lacks the shared
+ * admin secret has any business re-enabling a disabled device.
+ */
+if ($action === 'admin_restore_device_by_device_id' && $method === 'POST') {
+    $platformConfig = require __DIR__ . '/../config/platform.php';
+    requireAdmin($platformConfig);
+
+    $body = requestBody();
+    $deviceId = trim((string) ($body['device_id'] ?? ''));
+    if ($deviceId === '') {
+        jsonResponse(['success' => false, 'message' => 'device_id is required.'], 422);
+    }
+    $update = $pdo->prepare("UPDATE clients SET status = 'active' WHERE device_id = ? AND status = 'disabled'");
+    $update->execute([$deviceId]);
+    if ($update->rowCount() !== 1) {
+        jsonResponse(['success' => false, 'message' => 'Device not found, not registered for sync, or not disabled.'], 404);
+    }
+    jsonResponse(['success' => true]);
+}
+
+/**
  * Admin action - the dashboard's "Revoke shop" button. Disables every
  * device belonging to the given shop in one call (same 'disabled'
  * status admin_revoke_device already uses per-device) - there is no

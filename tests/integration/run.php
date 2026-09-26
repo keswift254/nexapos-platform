@@ -151,6 +151,55 @@ check($ownerLan['status'] === 200 && $joinedLan['status'] === 200
     && $ownerLan['body']['secret'] === $joinedLan['body']['secret'],
     'Native peers in one shop must receive the same 256-bit LAN key.');
 
+// The shop's license, as its main device reports it and joined devices follow it.
+$viewOf = static fn (string $key): array => request($baseUrl, 'client_status', 'GET', null, ['Authorization: Bearer ' . $key])['body'];
+$report = static fn (string $key, array $body): array => request($baseUrl, 'report_shop_license', 'POST', $body, ['Authorization: Bearer ' . $key]);
+$before = $viewOf($joinedKey);
+check(array_key_exists('license', $before) && $before['license'] === null, 'A shop that never reported has no license view: ' . json_encode($before));
+check(strtotime((string) ($before['server_time'] ?? '')) !== false && abs(strtotime($before['server_time']) - time()) < 10,
+    "client_status must carry the server's clock so a joined device can count the license against it.");
+check($report($joinedKey, ['state' => 'active'])['status'] === 403, 'A joined device reported the shop license.');
+check($report($ownerKey, ['state' => 'bogus'])['status'] === 422, 'An unknown license state was accepted.');
+check($report($ownerKey, ['state' => 'active', 'valid_until' => 'not a date'])['status'] === 422, 'A garbage end date was accepted.');
+$licenseNow = (int) floor(microtime(true) * 1000);
+$until = gmdate('Y-m-d\TH:i:s\Z', time() + 5 * 86400);
+check($report($ownerKey, ['state' => 'active', 'valid_until' => $until, 'checked_at' => $licenseNow])['status'] === 200, 'The main device could not report its license.');
+$seen = $viewOf($joinedKey)['license'] ?? null;
+check($seen !== null && $seen['state'] === 'active' && $seen['valid_until'] === $until
+    && $seen['never_expires'] === false && $seen['checked_at'] === $licenseNow,
+    'A joined device did not see the main device\'s license: ' . json_encode($seen));
+check(($viewOf($ownerKey)['license']['state'] ?? '') === 'active', 'The main device did not see its own reported license.');
+check($report($ownerKey, ['state' => 'active', 'valid_until' => null, 'checked_at' => $licenseNow + 10])['status'] === 200, 'A never-expiring license could not be reported.');
+$seen = $viewOf($joinedKey)['license'];
+check($seen['never_expires'] === true && $seen['valid_until'] === null, 'A license with no end date must read as never expiring: ' . json_encode($seen));
+// An older report (a delayed one) must not undo a newer one.
+check($report($ownerKey, ['state' => 'expired', 'checked_at' => $licenseNow - 5000])['status'] === 200, 'A stale report should be accepted and ignored, not refused.');
+check($viewOf($joinedKey)['license']['state'] === 'active', 'A stale report overwrote a newer one.');
+// The newest report wins, in either direction.
+check($report($ownerKey, ['state' => 'expired', 'valid_until' => gmdate('Y-m-d\TH:i:s\Z', time() - 3600), 'checked_at' => $licenseNow + 20])['status'] === 200, 'Could not report an expired license.');
+$seen = $viewOf($joinedKey)['license'];
+check($seen['state'] === 'expired' && $seen['never_expires'] === false && $seen['checked_at'] === $licenseNow + 20, 'The newer report did not win: ' . json_encode($seen));
+// A report dated in the future (a wrong clock) is counted as "now", so it cannot outrank honest ones.
+$farAhead = $licenseNow + 3 * 86400 * 1000;
+check($report($ownerKey, ['state' => 'active', 'valid_until' => $until, 'checked_at' => $farAhead])['status'] === 200, 'A future-dated report was refused.');
+$seen = $viewOf($joinedKey)['license'];
+check($seen['checked_at'] < $licenseNow + 3600 * 1000, 'A report from the future kept its future stamp: ' . json_encode($seen));
+$browserReporter = register($baseUrl, 'license-browser-owner', 'browser');
+check($report($browserReporter['body']['api_key'], ['state' => 'active'])['status'] === 403, 'A browser client reported a shop license.');
+// A license REVOKED on the license server marks the shop revoked; un-revoking clears the mark.
+$revokeOwner = register($baseUrl, 'license-revoke-owner', 'native');
+$revokeKey = $revokeOwner['body']['api_key'];
+check($report($revokeKey, ['state' => 'active', 'valid_until' => $until])['status'] === 200, 'Could not report for the revoke fixture.');
+$asAdmin = static fn (string $action, array $body): array => request($baseUrl, $action, 'POST', $body, ['X-Admin-Secret: ' . $adminSecret]);
+check($asAdmin('admin_revoke_device_by_device_id', ['device_id' => 'license-revoke-owner'])['status'] === 200, 'Could not revoke the fixture device.');
+$revokedShop = (int) $pdo->query("SELECT shop_id FROM clients WHERE device_id = 'license-revoke-owner'")->fetchColumn();
+$row = $pdo->query("SELECT license_state, license_valid_until FROM shops WHERE id = $revokedShop")->fetch();
+check($row['license_state'] === 'revoked' && $row['license_valid_until'] === null, 'A license revoke did not mark the shop revoked.');
+check($asAdmin('admin_restore_device_by_device_id', ['device_id' => 'license-revoke-owner'])['status'] === 200, 'Could not restore the fixture device.');
+check($pdo->query("SELECT license_state FROM shops WHERE id = $revokedShop")->fetchColumn() === null, 'Un-revoking left the shop marked revoked.');
+$otherShopState = $pdo->query("SELECT license_state FROM shops WHERE id = " . (int) $pdo->query("SELECT shop_id FROM clients WHERE device_id = 'owner-device'")->fetchColumn())->fetchColumn();
+check($otherShopState === 'active', 'Another shop\'s license view was disturbed by the revoke: ' . var_export($otherShopState, true));
+
 $relayStamp = gmdate('Y-m-d\TH:i:s') . '.654321Z';
 $relayChange = [
     'source_device_id' => $joinedDeviceId,

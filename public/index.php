@@ -301,6 +301,12 @@ if ($action === 'admin_revoke_device_by_device_id' && $method === 'POST') {
     if ($update->rowCount() !== 1) {
         jsonResponse(['success' => false, 'message' => 'Device not found, not registered for sync, or already disabled.'], 404);
     }
+    // The revoked license belonged to the shop's main device: tell the shop's other
+    // devices (they read it from client_status) rather than leave them counting.
+    $pdo->prepare("
+        UPDATE shops SET license_state = 'revoked', license_valid_until = NULL, license_checked_at = ?
+        WHERE id = (SELECT shop_id FROM (SELECT shop_id FROM clients WHERE device_id = ? AND is_owner = 1) AS owner_shop)
+    ")->execute([(int) floor(microtime(true) * 1000), $deviceId]);
     jsonResponse(['success' => true]);
 }
 
@@ -328,6 +334,13 @@ if ($action === 'admin_restore_device_by_device_id' && $method === 'POST') {
     if ($update->rowCount() !== 1) {
         jsonResponse(['success' => false, 'message' => 'Device not found, not registered for sync, or not disabled.'], 404);
     }
+    // No longer revoked: forget the shop's "revoked" mark. The main device reports the
+    // license's real state itself the next time it checks with the license server.
+    $pdo->prepare("
+        UPDATE shops SET license_state = NULL, license_valid_until = NULL, license_checked_at = NULL
+        WHERE license_state = 'revoked'
+          AND id = (SELECT shop_id FROM (SELECT shop_id FROM clients WHERE device_id = ? AND is_owner = 1) AS owner_shop)
+    ")->execute([$deviceId]);
     jsonResponse(['success' => true]);
 }
 
@@ -1032,7 +1045,77 @@ if ($action === 'client_status' && $method === 'GET') {
         // front instead of a non-owner device filling it in and only
         // then hitting save_settlement_details' 403.
         'is_owner' => (bool) $client['is_owner'],
+        // What the shop's main device last reported about its license (null until
+        // it has), and this server's clock to count it against - so a joined
+        // device follows the main device's license over the internet too.
+        'license' => shopLicenseView($client),
+        'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
     ]);
+}
+
+/**
+ * The shop's license as joined devices see it: {state: active|expired|revoked,
+ * valid_until: UTC ISO-8601 or null, never_expires, checked_at: ms}. Null when the
+ * shop's main device has never reported one.
+ */
+function shopLicenseView(array $client): ?array
+{
+    $state = (string) ($client['license_state'] ?? '');
+    if ($state === '') {
+        return null;
+    }
+    $validUntil = $client['license_valid_until'] ?? null;
+    return [
+        'state' => $state,
+        'valid_until' => $validUntil === null
+            ? null
+            : (new \DateTimeImmutable((string) $validUntil, new \DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
+        'never_expires' => $state === 'active' && $validUntil === null,
+        'checked_at' => ($client['license_checked_at'] ?? null) === null ? null : (int) $client['license_checked_at'],
+    ];
+}
+
+/**
+ * The shop's MAIN device tells the platform what its license is - what the license
+ * server last said about it - so every device that joined the shop can follow it
+ * (client_status carries it back). Only the founding, native device may report:
+ * it is the one that holds the license. A report older than what is stored is
+ * ignored (the newest word from the license server wins), and one dated in the
+ * future - a wrong clock - is treated as "now" so it cannot outrank every honest
+ * report after it.
+ */
+if ($action === 'report_shop_license' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    if (!(bool) $client['is_owner'] || $client['channel'] === 'browser') {
+        jsonResponse(['success' => false, 'message' => "Only the shop's main device can report its license."], 403);
+    }
+    $body = requestBody();
+    $state = (string) ($body['state'] ?? '');
+    if (!in_array($state, ['active', 'expired', 'revoked'], true)) {
+        jsonResponse(['success' => false, 'message' => 'state must be active, expired or revoked.'], 422);
+    }
+    $validUntil = null;
+    $rawValidUntil = $body['valid_until'] ?? null;
+    if ($rawValidUntil !== null && $rawValidUntil !== '') {
+        try {
+            $validUntil = (new \DateTimeImmutable((string) $rawValidUntil))
+                ->setTimezone(new \DateTimeZone('UTC'))
+                ->format('Y-m-d H:i:s');
+        } catch (\Throwable $e) {
+            jsonResponse(['success' => false, 'message' => 'valid_until is not a date.'], 422);
+        }
+    }
+    $nowMs = (int) floor(microtime(true) * 1000);
+    $checkedAt = isset($body['checked_at']) && is_numeric($body['checked_at']) ? (int) $body['checked_at'] : $nowMs;
+    if ($checkedAt <= 0 || $checkedAt > $nowMs + 60000) {
+        $checkedAt = $nowMs;
+    }
+    $update = $pdo->prepare('
+        UPDATE shops SET license_state = ?, license_valid_until = ?, license_checked_at = ?
+        WHERE id = ? AND (license_checked_at IS NULL OR license_checked_at <= ?)
+    ');
+    $update->execute([$state, $validUntil, $checkedAt, $client['shop_id'], $checkedAt]);
+    jsonResponse(['success' => true]);
 }
 
 if ($action === 'list_banks' && $method === 'GET') {

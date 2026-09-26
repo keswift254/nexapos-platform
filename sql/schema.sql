@@ -29,6 +29,16 @@ CREATE TABLE IF NOT EXISTS shops (
     -- details, only disbursing OUT of it does, and that step doesn't
     -- exist yet.
     intasend_wallet_id VARCHAR(40) NULL,
+    -- The state of the shop's NexaPOS license, as its main (owner) device last
+    -- reported it (report_shop_license) - or 'revoked' when the license server
+    -- revoked that device's license. NULL = never reported. Joined devices read it
+    -- from client_status so they follow the main device's license even when they
+    -- are not on its network. license_valid_until is UTC (NULL with 'active' =
+    -- never expires); license_checked_at is the moment the license server last
+    -- vouched for that state, in ms since 1970 - the newest one wins.
+    license_state VARCHAR(16) NULL,
+    license_valid_until DATETIME NULL,
+    license_checked_at BIGINT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

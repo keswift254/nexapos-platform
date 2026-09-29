@@ -30,7 +30,7 @@ $config = [
     // not send Origin and are unaffected by CORS.
     'cors_allowed_origins' => array_values(array_filter(array_map(
         'trim',
-        explode(',', getenv('PLATFORM_CORS_ALLOWED_ORIGINS') ?: 'https://nexapos-license-1.onrender.com')
+        explode(',', getenv('PLATFORM_CORS_ALLOWED_ORIGINS') ?: 'https://license.nexapos.cc,https://keswift254.github.io,https://nexapos.cc,https://www.nexapos.cc')
     ))),
     // IntaSend collection (M-Pesa STK push into a per-shop wallet) - see
     // IntaSendClient's class doc. Use sandbox.intasend.com and

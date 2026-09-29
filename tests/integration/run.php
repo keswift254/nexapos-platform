@@ -180,6 +180,12 @@ check($report($ownerKey, ['state' => 'expired', 'valid_until' => gmdate('Y-m-d\T
 $seen = $viewOf($joinedKey)['license'];
 check($seen['state'] === 'expired' && $seen['never_expires'] === false && $seen['checked_at'] === $licenseNow + 20, 'The newer report did not win: ' . json_encode($seen));
 // A report dated in the future (a wrong clock) is counted as "now", so it cannot outrank honest ones.
+// The preceding fixture stamped its report 20 ms ahead. Let the test server's
+// clock reach that stamp before testing a future report, or a fast CI runner
+// correctly ignores the clamped report as stale.
+while ((int) floor(microtime(true) * 1000) <= $licenseNow + 20) {
+    usleep(1000);
+}
 $farAhead = $licenseNow + 3 * 86400 * 1000;
 check($report($ownerKey, ['state' => 'active', 'valid_until' => $until, 'checked_at' => $farAhead])['status'] === 200, 'A future-dated report was refused.');
 $seen = $viewOf($joinedKey)['license'];

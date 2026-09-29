@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Run bounded retention maintenance
         env:
-          URL: ${{ secrets.PLATFORM_MAINTENANCE_URL }}
+          URL: https://sync.nexapos.cc/index.php?action=run_maintenance
           ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
         run: |
           test -n "$URL"

@@ -14,13 +14,15 @@ available to every supported installation.
 
 ## Paystack webhook
 
-Configure the Paystack dashboard webhook URL as:
+For the shared Paystack account used by license purchases and shop payments,
+configure the **Live Webhook URL** as:
 
-`https://<platform-host>/index.php?action=paystack_webhook`
+`https://license.nexapos.cc/paystack-webhook.php`
 
-The endpoint validates `X-Paystack-Signature`, verifies the transaction with
-Paystack, checks reference, amount, and currency, and records an idempotency
-key before updating the local transaction.
+The router forwards the original signed payload to the license or platform
+handler. Each handler validates `X-Paystack-Signature`; the platform handler
+also verifies the transaction with Paystack, checks reference, amount, and
+currency, and records an idempotency key before updating the local transaction.
 
 ## IntaSend collection
 
@@ -55,11 +57,10 @@ deployment must not be promoted if the health endpoint fails validation.
 
 ## Retention maintenance
 
-The scheduled GitHub workflow calls `run_maintenance` once per day. Configure
-these repository secrets before enabling it:
+The scheduled GitHub workflow calls
+`https://sync.nexapos.cc/index.php?action=run_maintenance` once per day.
+Configure this repository secret before enabling it:
 
-- `PLATFORM_MAINTENANCE_URL`: the full URL ending in
-  `index.php?action=run_maintenance`
 - `PLATFORM_ADMIN_SECRET`: the platform service's admin secret
 
 Each run is bounded by `PLATFORM_MAINTENANCE_BATCH_SIZE` and

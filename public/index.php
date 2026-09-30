@@ -52,6 +52,51 @@ function requestBody(): array
 }
 
 /**
+ * Support is intentionally available through the same authenticated platform
+ * API every synced device already uses. CREATE IF NOT EXISTS keeps deployment
+ * backward-compatible if the SQL migration has not been applied yet; the
+ * checked-in migration remains the canonical schema for provisioned databases.
+ */
+function ensureSupportTables(PDO $pdo): void
+{
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            shop_id INT NOT NULL,
+            opened_by_client_id INT NOT NULL,
+            subject VARCHAR(160) NOT NULL,
+            status ENUM('open','pending','closed') NOT NULL DEFAULT 'open',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_support_tickets_shop_updated (shop_id, updated_at),
+            FOREIGN KEY (shop_id) REFERENCES shops(id),
+            FOREIGN KEY (opened_by_client_id) REFERENCES clients(id)
+        )
+    ");
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS support_messages (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ticket_id BIGINT NOT NULL,
+            client_id INT NULL,
+            sender ENUM('customer','support') NOT NULL,
+            body TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_support_messages_ticket (ticket_id, id),
+            FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
+            FOREIGN KEY (client_id) REFERENCES clients(id)
+        )
+    ");
+}
+
+function supportTicketForShop(PDO $pdo, int $ticketId, int $shopId): ?array
+{
+    $stmt = $pdo->prepare('SELECT id, shop_id, subject, status, created_at, updated_at FROM support_tickets WHERE id = ? AND shop_id = ?');
+    $stmt->execute([$ticketId, $shopId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
+/**
  * Same case-insensitive-header gotcha Auth::authorizationHeader()
  * already documents: $_SERVER['HTTP_...'] is unset under some
  * Apache/PHP configs, and a literal getallheaders() lookup misses
@@ -204,6 +249,96 @@ if ($action === 'intasend_webhook' && $method === 'POST') {
     }
 
     jsonResponse(['success' => true, 'outcome' => $result['outcome']]);
+}
+
+// Customer support tickets. Every action is authenticated and shop-scoped:
+ // devices in one shop may collaborate on the same ticket thread, but can
+ // never enumerate or address another shop's ticket id.
+if ($action === 'support_list' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    ensureSupportTables($pdo);
+    $stmt = $pdo->prepare(
+        'SELECT id, subject, status, created_at, updated_at
+         FROM support_tickets WHERE shop_id = ? ORDER BY updated_at DESC, id DESC LIMIT 100'
+    );
+    $stmt->execute([(int) $client['shop_id']]);
+    jsonResponse(['success' => true, 'tickets' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+}
+
+if ($action === 'support_open' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    ensureSupportTables($pdo);
+    $body = requestBody();
+    $subject = trim((string) ($body['subject'] ?? ''));
+    $message = trim((string) ($body['message'] ?? ''));
+    if (mb_strlen($subject) < 3 || mb_strlen($subject) > 160) {
+        jsonResponse(['success' => false, 'message' => 'Subject must be between 3 and 160 characters.'], 422);
+    }
+    if ($message === '' || mb_strlen($message) > 8000) {
+        jsonResponse(['success' => false, 'message' => 'Describe the issue in 1 to 8000 characters.'], 422);
+    }
+    $pdo->beginTransaction();
+    try {
+        $ticket = $pdo->prepare(
+            "INSERT INTO support_tickets (shop_id, opened_by_client_id, subject, status)
+             VALUES (?, ?, ?, 'open')"
+        );
+        $ticket->execute([(int) $client['shop_id'], (int) $client['id'], $subject]);
+        $ticketId = (int) $pdo->lastInsertId();
+        $msg = $pdo->prepare(
+            "INSERT INTO support_messages (ticket_id, client_id, sender, body)
+             VALUES (?, ?, 'customer', ?)"
+        );
+        $msg->execute([$ticketId, (int) $client['id'], $message]);
+        $pdo->commit();
+    } catch (\Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $e;
+    }
+    jsonResponse(['success' => true, 'ticket_id' => $ticketId], 201);
+}
+
+if ($action === 'support_thread' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    ensureSupportTables($pdo);
+    $ticketId = (int) ($_GET['ticket_id'] ?? 0);
+    $ticket = supportTicketForShop($pdo, $ticketId, (int) $client['shop_id']);
+    if ($ticket === null) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
+    }
+    $messages = $pdo->prepare(
+        'SELECT id, sender, body, created_at FROM support_messages
+         WHERE ticket_id = ? ORDER BY id ASC LIMIT 500'
+    );
+    $messages->execute([$ticketId]);
+    jsonResponse([
+        'success' => true,
+        'ticket' => $ticket,
+        'messages' => $messages->fetchAll(PDO::FETCH_ASSOC),
+    ]);
+}
+
+if ($action === 'support_reply' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    ensureSupportTables($pdo);
+    $body = requestBody();
+    $ticketId = (int) ($body['ticket_id'] ?? 0);
+    $message = trim((string) ($body['message'] ?? ''));
+    $ticket = supportTicketForShop($pdo, $ticketId, (int) $client['shop_id']);
+    if ($ticket === null) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
+    }
+    if ($message === '' || mb_strlen($message) > 8000) {
+        jsonResponse(['success' => false, 'message' => 'Message must be between 1 and 8000 characters.'], 422);
+    }
+    $stmt = $pdo->prepare(
+        "INSERT INTO support_messages (ticket_id, client_id, sender, body)
+         VALUES (?, ?, 'customer', ?)"
+    );
+    $stmt->execute([$ticketId, (int) $client['id'], $message]);
+    $pdo->prepare("UPDATE support_tickets SET status = 'open', updated_at = UTC_TIMESTAMP() WHERE id = ?")
+        ->execute([$ticketId]);
+    jsonResponse(['success' => true]);
 }
 
 // Render's health check hits this - deliberately goes through

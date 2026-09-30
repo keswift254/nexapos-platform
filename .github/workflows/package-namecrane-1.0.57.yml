@@ -15,8 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
           test -f 'public/index.php'
           test -f 'sql/migrations/20260930_001_support_tickets.sql'
+
       - name: Build deployment bundle
         shell: bash
         run: |
@@ -27,6 +33,7 @@ jobs:
           mkdir -p "package/$(dirname 'sql/migrations/20260930_001_support_tickets.sql')"
           cp 'sql/migrations/20260930_001_support_tickets.sql' "package/sql/migrations/20260930_001_support_tickets.sql"
           find package -type f -maxdepth 6 -print
+
       - uses: actions/upload-artifact@v4
         with:
           name: NexaPOS-Platform-Backend-1.0.57-NameCrane

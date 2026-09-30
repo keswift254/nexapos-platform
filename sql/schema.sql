@@ -254,3 +254,37 @@ CREATE TABLE IF NOT EXISTS sync_snapshot_rows (
     FOREIGN KEY (snapshot_id) REFERENCES sync_snapshots(id) ON DELETE CASCADE,
     FOREIGN KEY (change_id) REFERENCES sync_changes(id)
 );
+-- Support tickets: a shop's device opens one from the in-app Support
+-- screen, the vendor replies from outside this app. shop_id, not
+-- client_id, is the boundary every route checks against (any device of
+-- the shop may read/reply to a ticket another device of the same shop
+-- opened) - see support_list/support_open/support_thread/support_reply
+-- in public/index.php, and sql/migrations/20260930_001_support_tickets.sql,
+-- which this definition must be kept in sync with (that migration exists
+-- for databases that predate this table; a fresh bootstrap from this file
+-- alone must already have it, or runMigrations() marks the migration
+-- 'applied' without ever having run its SQL - see Database::bootstrapDatabase).
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    shop_id INT NOT NULL,
+    opened_by_client_id INT NOT NULL,
+    subject VARCHAR(160) NOT NULL,
+    status ENUM('open','pending','closed') NOT NULL DEFAULT 'open',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_support_tickets_shop_updated (shop_id, updated_at),
+    FOREIGN KEY (shop_id) REFERENCES shops(id),
+    FOREIGN KEY (opened_by_client_id) REFERENCES clients(id)
+);
+
+CREATE TABLE IF NOT EXISTS support_messages (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ticket_id BIGINT NOT NULL,
+    client_id INT NULL,
+    sender ENUM('customer','support') NOT NULL,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_support_messages_ticket (ticket_id, id),
+    FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES clients(id)
+);

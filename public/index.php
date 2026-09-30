@@ -51,43 +51,6 @@ function requestBody(): array
     return is_array($data) ? $data : [];
 }
 
-/**
- * Support is intentionally available through the same authenticated platform
- * API every synced device already uses. CREATE IF NOT EXISTS keeps deployment
- * backward-compatible if the SQL migration has not been applied yet; the
- * checked-in migration remains the canonical schema for provisioned databases.
- */
-function ensureSupportTables(PDO $pdo): void
-{
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS support_tickets (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            shop_id INT NOT NULL,
-            opened_by_client_id INT NOT NULL,
-            subject VARCHAR(160) NOT NULL,
-            status ENUM('open','pending','closed') NOT NULL DEFAULT 'open',
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_support_tickets_shop_updated (shop_id, updated_at),
-            FOREIGN KEY (shop_id) REFERENCES shops(id),
-            FOREIGN KEY (opened_by_client_id) REFERENCES clients(id)
-        )
-    ");
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS support_messages (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            ticket_id BIGINT NOT NULL,
-            client_id INT NULL,
-            sender ENUM('customer','support') NOT NULL,
-            body TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_support_messages_ticket (ticket_id, id),
-            FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
-            FOREIGN KEY (client_id) REFERENCES clients(id)
-        )
-    ");
-}
-
 function supportTicketForShop(PDO $pdo, int $ticketId, int $shopId): ?array
 {
     $stmt = $pdo->prepare('SELECT id, shop_id, subject, status, created_at, updated_at FROM support_tickets WHERE id = ? AND shop_id = ?');
@@ -256,7 +219,6 @@ if ($action === 'intasend_webhook' && $method === 'POST') {
  // never enumerate or address another shop's ticket id.
 if ($action === 'support_list' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
-    ensureSupportTables($pdo);
     $stmt = $pdo->prepare(
         'SELECT id, subject, status, created_at, updated_at
          FROM support_tickets WHERE shop_id = ? ORDER BY updated_at DESC, id DESC LIMIT 100'
@@ -267,7 +229,6 @@ if ($action === 'support_list' && $method === 'GET') {
 
 if ($action === 'support_open' && $method === 'POST') {
     $client = Auth::requireClient($pdo);
-    ensureSupportTables($pdo);
     $body = requestBody();
     $subject = trim((string) ($body['subject'] ?? ''));
     $message = trim((string) ($body['message'] ?? ''));
@@ -300,7 +261,6 @@ if ($action === 'support_open' && $method === 'POST') {
 
 if ($action === 'support_thread' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
-    ensureSupportTables($pdo);
     $ticketId = (int) ($_GET['ticket_id'] ?? 0);
     $ticket = supportTicketForShop($pdo, $ticketId, (int) $client['shop_id']);
     if ($ticket === null) {
@@ -320,7 +280,6 @@ if ($action === 'support_thread' && $method === 'GET') {
 
 if ($action === 'support_reply' && $method === 'POST') {
     $client = Auth::requireClient($pdo);
-    ensureSupportTables($pdo);
     $body = requestBody();
     $ticketId = (int) ($body['ticket_id'] ?? 0);
     $message = trim((string) ($body['message'] ?? ''));

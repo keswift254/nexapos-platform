@@ -368,4 +368,58 @@ $nativeStatus = request($baseUrl, 'client_status', 'GET', null, ['Authorization:
 check($nativeStatus['status'] === 200 && ($nativeStatus['body']['business_name'] ?? null) === 'Control Shop',
     'client_status must NOT redact settlement fields for a native-channel client (control case).');
 
+// Support tickets: a real round trip, not just "the route exists" (the
+// separate verify-production-1.0.57.yml workflow only checks for a 401/403
+// on an unauthenticated support_list - it never opened a ticket for real).
+$supportOwner = register($baseUrl, 'support-owner-device');
+check($supportOwner['status'] === 201, 'Could not register the support fixture device.');
+$supportKey = $supportOwner['body']['api_key'];
+$emptyList = request($baseUrl, 'support_list', 'GET', null, ['Authorization: Bearer ' . $supportKey]);
+check($emptyList['status'] === 200 && $emptyList['body']['tickets'] === [], 'A shop with no tickets must list none.');
+check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Hi', 'message' => 'short subject'], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
+    'A subject under 3 characters was accepted.');
+check(request($baseUrl, 'support_open', 'POST', ['subject' => str_repeat('x', 161), 'message' => 'm'], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
+    'A subject over 160 characters was accepted.');
+check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => ''], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
+    'An empty message was accepted.');
+$opened = request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'My till will not sync.'], ['Authorization: Bearer ' . $supportKey]);
+check($opened['status'] === 201 && ($opened['body']['ticket_id'] ?? 0) > 0, 'Could not open a support ticket: ' . $opened['raw']);
+$ticketId = $opened['body']['ticket_id'];
+$list = request($baseUrl, 'support_list', 'GET', null, ['Authorization: Bearer ' . $supportKey]);
+check($list['status'] === 200 && count($list['body']['tickets']) === 1 && $list['body']['tickets'][0]['id'] === $ticketId
+    && $list['body']['tickets'][0]['status'] === 'open', 'The opened ticket did not appear in the list: ' . $list['raw']);
+$supportThread = static function (string $key, int $ticketId) use ($baseUrl): array {
+    $ch = curl_init($baseUrl . '?action=support_thread&ticket_id=' . $ticketId);
+    curl_setopt_array($ch, [
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Authorization: Bearer ' . $key],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $raw = curl_exec($ch);
+    if ($raw === false) {
+        throw new RuntimeException(curl_error($ch));
+    }
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['status' => $status, 'body' => json_decode($raw, true), 'raw' => $raw];
+};
+$thread = $supportThread($supportKey, $ticketId);
+check($thread['status'] === 200 && $thread['body']['ticket']['id'] === $ticketId
+    && count($thread['body']['messages']) === 1 && $thread['body']['messages'][0]['sender'] === 'customer'
+    && $thread['body']['messages'][0]['body'] === 'My till will not sync.', 'The ticket thread was not readable after opening: ' . $thread['raw']);
+check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => ''], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
+    'An empty reply was accepted.');
+$reply = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Still broken after a reinstall.'], ['Authorization: Bearer ' . $supportKey]);
+check($reply['status'] === 200, 'Could not reply to a support ticket: ' . $reply['raw']);
+$threadAfterReply = $supportThread($supportKey, $ticketId);
+check(count($threadAfterReply['body']['messages']) === 2 && $threadAfterReply['body']['messages'][1]['body'] === 'Still broken after a reinstall.',
+    'The reply did not land in the thread.');
+$otherShop = register($baseUrl, 'support-other-shop-device');
+check($supportThread($otherShop['body']['api_key'], $ticketId)['status'] === 404,
+    'A device from a different shop could read another shop\'s support ticket.');
+check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Should not land'], ['Authorization: Bearer ' . $otherShop['body']['api_key']])['status'] === 404,
+    'A device from a different shop could reply to another shop\'s support ticket.');
+check(request($baseUrl, 'support_list', 'GET', null, [])['status'] === 401, 'support_list was reachable with no API key.');
+check(request($baseUrl, 'support_open', 'POST', ['subject' => 'x', 'message' => 'y'], [])['status'] === 401, 'support_open was reachable with no API key.');
+
 echo "Platform integration tests passed.\n";

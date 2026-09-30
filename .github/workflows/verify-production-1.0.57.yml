@@ -1,0 +1,33 @@
+name: Verify production Support API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-production-1.0.57.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Support route exists in production
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(mktemp)"
+          code="$(curl -sS -o "$body" -w '%{http_code}' --max-time 30             'https://sync.nexapos.cc/index.php?action=support_list' || true)"
+          echo "HTTP $code"
+          cat "$body"
+          echo
+          # New route reaches authentication before any ticket query. The old
+          # backend reports an unknown action / 404 instead.
+          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            echo 'VERIFIED Support route exists in production.'
+            exit 0
+          fi
+          echo 'Support route is not confirmed live yet.' >&2
+          exit 1

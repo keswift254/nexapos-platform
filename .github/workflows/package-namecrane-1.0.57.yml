@@ -1,0 +1,35 @@
+name: Package NameCrane 1.0.57 backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/package-namecrane-1.0.57.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+          test -f 'public/index.php'
+          test -f 'sql/migrations/20260930_001_support_tickets.sql'
+      - name: Build deployment bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package
+          mkdir -p "package/$(dirname 'public/index.php')"
+          cp 'public/index.php' "package/public/index.php"
+          mkdir -p "package/$(dirname 'sql/migrations/20260930_001_support_tickets.sql')"
+          cp 'sql/migrations/20260930_001_support_tickets.sql' "package/sql/migrations/20260930_001_support_tickets.sql"
+          find package -type f -maxdepth 6 -print
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NexaPOS-Platform-Backend-1.0.57-NameCrane
+          path: package/
+          if-no-files-found: error
+          retention-days: 30

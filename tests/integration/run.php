@@ -383,12 +383,16 @@ check(request($baseUrl, 'support_open', 'POST', ['subject' => str_repeat('x', 16
     'A subject over 160 characters was accepted.');
 check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => ''], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
     'An empty message was accepted.');
-$opened = request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'My till will not sync.'], ['Authorization: Bearer ' . $supportKey]);
+check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'Help', 'email' => "bad\nrecipient@example.com"], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
+    'A malformed contact email was accepted.');
+$opened = request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'My till will not sync.', 'email' => 'owner@example.com'], ['Authorization: Bearer ' . $supportKey]);
 check($opened['status'] === 201 && ($opened['body']['ticket_id'] ?? 0) > 0, 'Could not open a support ticket: ' . $opened['raw']);
 $ticketId = $opened['body']['ticket_id'];
 $list = request($baseUrl, 'support_list', 'GET', null, ['Authorization: Bearer ' . $supportKey]);
 check($list['status'] === 200 && count($list['body']['tickets']) === 1 && $list['body']['tickets'][0]['id'] === $ticketId
-    && $list['body']['tickets'][0]['status'] === 'open', 'The opened ticket did not appear in the list: ' . $list['raw']);
+    && $list['body']['tickets'][0]['status'] === 'open'
+    && $list['body']['tickets'][0]['customer_email'] === 'owner@example.com',
+    'The opened ticket did not retain its contact email: ' . $list['raw']);
 $supportThread = static function (string $key, int $ticketId) use ($baseUrl): array {
     $ch = curl_init($baseUrl . '?action=support_thread&ticket_id=' . $ticketId);
     curl_setopt_array($ch, [
@@ -420,6 +424,10 @@ check($supportThread($otherShop['body']['api_key'], $ticketId)['status'] === 404
     'A device from a different shop could read another shop\'s support ticket.');
 check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Should not land'], ['Authorization: Bearer ' . $otherShop['body']['api_key']])['status'] === 404,
     'A device from a different shop could reply to another shop\'s support ticket.');
+check(request($baseUrl, 'support_close', 'POST', ['ticket_id' => $ticketId], ['Authorization: Bearer ' . $otherShop['body']['api_key']])['status'] === 404,
+    'A device from a different shop could close another shop\'s support ticket.');
+check(request($baseUrl, 'support_close', 'POST', ['ticket_id' => $ticketId], [])['status'] === 401,
+    'support_close was reachable with no API key.');
 check(request($baseUrl, 'support_list', 'GET', null, [])['status'] === 401, 'support_list was reachable with no API key.');
 check(request($baseUrl, 'support_open', 'POST', ['subject' => 'x', 'message' => 'y'], [])['status'] === 401, 'support_open was reachable with no API key.');
 
@@ -477,8 +485,14 @@ check(count($afterAdminReply['body']['messages']) === 3
     'The admin reply did not land in the thread.');
 check($afterAdminReply['body']['ticket']['status'] === 'pending',
     'An admin reply must mark the ticket pending (waiting on the customer), not leave it open.');
+check($afterAdminReply['body']['ticket']['customer_email'] === 'owner@example.com',
+    'Admin thread lost the customer contact email.');
 
-// The customer replying again must put it back on the vendor's plate.
+$shopClosed = request($baseUrl, 'support_close', 'POST', ['ticket_id' => $ticketId], ['Authorization: Bearer ' . $supportKey]);
+check($shopClosed['status'] === 200 && $supportThread($supportKey, $ticketId)['body']['ticket']['status'] === 'closed',
+    'The shop could not close its ticket.');
+
+// Replying to a closed ticket reopens it and puts it back on the vendor's plate.
 $customerReplyAgain = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Still not working.'], ['Authorization: Bearer ' . $supportKey]);
 check($customerReplyAgain['status'] === 200, 'Could not reply as the customer again: ' . $customerReplyAgain['raw']);
 check($adminSupportThread($ticketId)['body']['ticket']['status'] === 'open',

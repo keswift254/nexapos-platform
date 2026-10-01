@@ -22,6 +22,7 @@ use Platform\Services\IntaSendClient;
 use Platform\Services\IntaSendReconciler;
 use Platform\Services\MaintenanceService;
 use Platform\Services\SyncSnapshot;
+use Platform\Services\SupportMailer;
 
 /**
  * The 10 SyncedColumns tables on the phone (see _syncedTableNames in
@@ -53,7 +54,7 @@ function requestBody(): array
 
 function supportTicketForShop(PDO $pdo, int $ticketId, int $shopId): ?array
 {
-    $stmt = $pdo->prepare('SELECT id, shop_id, subject, status, created_at, updated_at FROM support_tickets WHERE id = ? AND shop_id = ?');
+    $stmt = $pdo->prepare('SELECT id, shop_id, subject, customer_email, status, created_at, updated_at FROM support_tickets WHERE id = ? AND shop_id = ?');
     $stmt->execute([$ticketId, $shopId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ? normalizeSupportTicket($row) : null;
@@ -235,7 +236,7 @@ if ($action === 'intasend_webhook' && $method === 'POST') {
 if ($action === 'support_list' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
     $stmt = $pdo->prepare(
-        'SELECT id, subject, status, created_at, updated_at
+        'SELECT id, subject, customer_email, status, created_at, updated_at
          FROM support_tickets WHERE shop_id = ? ORDER BY updated_at DESC, id DESC LIMIT 100'
     );
     $stmt->execute([(int) $client['shop_id']]);
@@ -247,19 +248,23 @@ if ($action === 'support_open' && $method === 'POST') {
     $body = requestBody();
     $subject = trim((string) ($body['subject'] ?? ''));
     $message = trim((string) ($body['message'] ?? ''));
+    $email = trim((string) ($body['email'] ?? ''));
     if (mb_strlen($subject) < 3 || mb_strlen($subject) > 160) {
         jsonResponse(['success' => false, 'message' => 'Subject must be between 3 and 160 characters.'], 422);
     }
     if ($message === '' || mb_strlen($message) > 8000) {
         jsonResponse(['success' => false, 'message' => 'Describe the issue in 1 to 8000 characters.'], 422);
     }
+    if ($email !== '' && (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL))) {
+        jsonResponse(['success' => false, 'message' => 'Enter a valid email address or leave it blank.'], 422);
+    }
     $pdo->beginTransaction();
     try {
         $ticket = $pdo->prepare(
-            "INSERT INTO support_tickets (shop_id, opened_by_client_id, subject, status)
-             VALUES (?, ?, ?, 'open')"
+            "INSERT INTO support_tickets (shop_id, opened_by_client_id, subject, customer_email, status)
+             VALUES (?, ?, ?, ?, 'open')"
         );
-        $ticket->execute([(int) $client['shop_id'], (int) $client['id'], $subject]);
+        $ticket->execute([(int) $client['shop_id'], (int) $client['id'], $subject, $email ?: null]);
         $ticketId = (int) $pdo->lastInsertId();
         $msg = $pdo->prepare(
             "INSERT INTO support_messages (ticket_id, client_id, sender, body)
@@ -270,6 +275,16 @@ if ($action === 'support_open' && $method === 'POST') {
     } catch (\Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
         throw $e;
+    }
+    $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
+    if ($from !== '') {
+        $mailer = new SupportMailer($from);
+        if ($email !== '') {
+            $mailer->send($email, "NexaPOS ticket #$ticketId received",
+                "We received your support ticket #$ticketId: $subject\n\n$message\n\nOpen NexaPOS > Support to view the conversation.");
+        }
+        $mailer->send($from, "New NexaPOS ticket #$ticketId",
+            "A shop opened ticket #$ticketId: $subject\n\n$message\n\nReply from the NexaPOS admin dashboard.");
     }
     jsonResponse(['success' => true, 'ticket_id' => $ticketId], 201);
 }
@@ -312,6 +327,22 @@ if ($action === 'support_reply' && $method === 'POST') {
     $stmt->execute([$ticketId, (int) $client['id'], $message]);
     $pdo->prepare("UPDATE support_tickets SET status = 'open', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
+    $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
+    if ($from !== '') {
+        (new SupportMailer($from))->send($from, "Reply on NexaPOS ticket #$ticketId",
+            "The shop replied to ticket #$ticketId: {$ticket['subject']}\n\n$message\n\nOpen the NexaPOS admin dashboard to respond.");
+    }
+    jsonResponse(['success' => true]);
+}
+
+if ($action === 'support_close' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $ticketId = (int) (requestBody()['ticket_id'] ?? 0);
+    if (supportTicketForShop($pdo, $ticketId, (int) $client['shop_id']) === null) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
+    }
+    $pdo->prepare("UPDATE support_tickets SET status = 'closed', updated_at = UTC_TIMESTAMP() WHERE id = ?")
+        ->execute([$ticketId]);
     jsonResponse(['success' => true]);
 }
 
@@ -323,7 +354,7 @@ if ($action === 'admin_list_support_tickets' && $method === 'GET') {
     requireAdmin($platformConfig);
     $stmt = $pdo->query(
         "SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
-                support_tickets.subject, support_tickets.status,
+                support_tickets.subject, support_tickets.customer_email, support_tickets.status,
                 support_tickets.created_at, support_tickets.updated_at,
                 (SELECT COUNT(*) FROM support_messages WHERE support_messages.ticket_id = support_tickets.id) AS message_count
          FROM support_tickets
@@ -339,7 +370,7 @@ if ($action === 'admin_support_thread' && $method === 'GET') {
     $ticketId = (int) ($_GET['ticket_id'] ?? 0);
     $stmt = $pdo->prepare(
         'SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
-                support_tickets.subject, support_tickets.status,
+                support_tickets.subject, support_tickets.customer_email, support_tickets.status,
                 support_tickets.created_at, support_tickets.updated_at
          FROM support_tickets JOIN shops ON shops.id = support_tickets.shop_id
          WHERE support_tickets.id = ?'
@@ -374,9 +405,10 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $body = requestBody();
     $ticketId = (int) ($body['ticket_id'] ?? 0);
     $message = trim((string) ($body['message'] ?? ''));
-    $exists = $pdo->prepare('SELECT 1 FROM support_tickets WHERE id = ?');
+    $exists = $pdo->prepare('SELECT subject, customer_email FROM support_tickets WHERE id = ?');
     $exists->execute([$ticketId]);
-    if ($exists->fetchColumn() === false) {
+    $recipient = $exists->fetch(PDO::FETCH_ASSOC);
+    if ($recipient === false) {
         jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
     }
     if ($message === '' || mb_strlen($message) > 8000) {
@@ -389,6 +421,12 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $stmt->execute([$ticketId, $message]);
     $pdo->prepare("UPDATE support_tickets SET status = 'pending', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
+    $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
+    $email = (string) ($recipient['customer_email'] ?? '');
+    if ($from !== '' && $email !== '') {
+        (new SupportMailer($from))->send($email, "NexaPOS replied to ticket #$ticketId",
+            "NexaPOS Support replied to ticket #$ticketId: {$recipient['subject']}\n\n$message\n\nOpen NexaPOS > Support to view or reply. Replying to a closed ticket reopens it.");
+    }
     jsonResponse(['success' => true]);
 }
 

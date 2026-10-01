@@ -269,6 +269,7 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     shop_id INT NOT NULL,
     opened_by_client_id INT NOT NULL,
     subject VARCHAR(160) NOT NULL,
+    customer_email VARCHAR(254) NULL,
     status ENUM('open','pending','closed') NOT NULL DEFAULT 'open',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

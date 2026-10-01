@@ -507,3 +507,27 @@ check($adminSupportThread($ticketId)['body']['ticket']['status'] === 'closed', '
 check($adminSupportThread(999999999)['status'] === 404, 'admin_support_thread did not 404 for a non-existent ticket.');
 
 echo "Platform integration tests passed.\n";
+
+// Photos are private, validated, and attached to the same message transaction.
+$png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XkAAAAASUVORK5CYII=';
+$photoReply = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => '', 'attachments' => [['data' => $png]]], ['Authorization: Bearer ' . $supportKey]);
+check($photoReply['status'] === 200, 'Photo-only reply failed: ' . $photoReply['raw']);
+$photoThread = $supportThread($supportKey, $ticketId)['body'];
+$lastMessage = end($photoThread['messages']);
+check(count($lastMessage['attachments']) === 1, 'Photo metadata missing.');
+$photoId = $lastMessage['attachments'][0]['id'];
+$readPhoto = static function (array $headers, string $action = 'support_attachment') use ($baseUrl, $photoId): array {
+    $ch = curl_init($baseUrl . '?action=' . $action . '&id=' . $photoId);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers]);
+    $bytes = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
+    return ['status' => $status, 'bytes' => $bytes];
+};
+check($readPhoto([])['status'] === 401, 'Anonymous photo access was allowed.');
+check($readPhoto(['Authorization: Bearer ' . $otherShop['body']['api_key']])['status'] === 404, 'Cross-shop photo access was allowed.');
+check($readPhoto(['Authorization: Bearer ' . $supportKey])['bytes'] === base64_decode($png), 'Photo bytes changed.');
+check($readPhoto(['X-Admin-Secret: ' . $adminSecret], 'admin_support_attachment')['status'] === 200, 'Admin cannot read photo.');
+foreach ([['data' => base64_encode('<svg onload="alert(1)"></svg>')], ['data' => 'bad base64!']] as $badPhoto) {
+    check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Unsafe', 'attachments' => [$badPhoto]], ['Authorization: Bearer ' . $supportKey])['status'] === 422, 'Invalid image accepted.');
+}
+check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Too many', 'attachments' => array_fill(0, 5, ['data' => $png])], ['Authorization: Bearer ' . $supportKey])['status'] === 422, 'Too many photos accepted.');
+echo "Support photo access and validation tests passed.\n";

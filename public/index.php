@@ -23,6 +23,7 @@ use Platform\Services\IntaSendReconciler;
 use Platform\Services\MaintenanceService;
 use Platform\Services\SyncSnapshot;
 use Platform\Services\SupportMailer;
+use Platform\Services\SupportAttachments;
 
 /**
  * The 10 SyncedColumns tables on the phone (see _syncedTableNames in
@@ -50,6 +51,30 @@ function requestBody(): array
 {
     $data = json_decode((string) file_get_contents('php://input'), true);
     return is_array($data) ? $data : [];
+}
+
+function supportImages(array $body): array
+{
+    try {
+        return SupportAttachments::validate($body['attachments'] ?? []);
+    } catch (InvalidArgumentException $e) {
+        jsonResponse(['success' => false, 'message' => $e->getMessage()], 422);
+    }
+}
+
+function supportWrite(PDO $pdo, callable $write): void
+{
+    $pdo->beginTransaction();
+    try {
+        $write();
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($e instanceof InvalidArgumentException) {
+            jsonResponse(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+        throw $e;
+    }
 }
 
 function supportTicketForShop(PDO $pdo, int $ticketId, int $shopId): ?array
@@ -233,11 +258,33 @@ if ($action === 'intasend_webhook' && $method === 'POST') {
 // Customer support tickets. Every action is authenticated and shop-scoped:
  // devices in one shop may collaborate on the same ticket thread, but can
  // never enumerate or address another shop's ticket id.
+if (in_array($action, ['support_attachment', 'admin_support_attachment'], true) && $method === 'GET') {
+    $shopId = null;
+    if ($action === 'admin_support_attachment') {
+        requireAdmin($platformConfig);
+    } else {
+        $client = Auth::requireClient($pdo);
+        $shopId = (int) $client['shop_id'];
+    }
+    $query = $pdo->prepare('SELECT a.mime_type, a.image_data FROM support_attachments a JOIN support_tickets t ON t.id = a.ticket_id WHERE a.id = ?' . ($shopId === null ? '' : ' AND t.shop_id = ?'));
+    $query->execute($shopId === null ? [(int) ($_GET['id'] ?? 0)] : [(int) ($_GET['id'] ?? 0), $shopId]);
+    $image = $query->fetch(PDO::FETCH_ASSOC);
+    if (!$image) jsonResponse(['success' => false, 'message' => 'Photo not found.'], 404);
+    while (ob_get_level() > 0) ob_end_clean();
+    header('Content-Type: ' . $image['mime_type']);
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: private, no-store');
+    header("Content-Security-Policy: default-src 'none'");
+    echo $image['image_data'];
+    exit;
+}
+
 if ($action === 'support_list' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
     $stmt = $pdo->prepare(
-        'SELECT id, subject, customer_email, status, created_at, updated_at
-         FROM support_tickets WHERE shop_id = ? ORDER BY updated_at DESC, id DESC LIMIT 100'
+        "SELECT id, subject, customer_email, status, created_at, updated_at,
+                (SELECT MAX(id) FROM support_messages WHERE ticket_id = support_tickets.id AND sender = 'support') AS last_support_message_id
+         FROM support_tickets WHERE shop_id = ? ORDER BY updated_at DESC, id DESC LIMIT 100"
     );
     $stmt->execute([(int) $client['shop_id']]);
     jsonResponse(['success' => true, 'tickets' => array_map('normalizeSupportTicket', $stmt->fetchAll(PDO::FETCH_ASSOC))]);
@@ -248,11 +295,12 @@ if ($action === 'support_open' && $method === 'POST') {
     $body = requestBody();
     $subject = trim((string) ($body['subject'] ?? ''));
     $message = trim((string) ($body['message'] ?? ''));
+    $images = supportImages($body);
     $email = trim((string) ($body['email'] ?? ''));
     if (mb_strlen($subject) < 3 || mb_strlen($subject) > 160) {
         jsonResponse(['success' => false, 'message' => 'Subject must be between 3 and 160 characters.'], 422);
     }
-    if ($message === '' || mb_strlen($message) > 8000) {
+    if (($message === '' && !$images) || mb_strlen($message) > 8000) {
         jsonResponse(['success' => false, 'message' => 'Describe the issue in 1 to 8000 characters.'], 422);
     }
     if ($email !== '' && (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL))) {
@@ -271,9 +319,11 @@ if ($action === 'support_open' && $method === 'POST') {
              VALUES (?, ?, 'customer', ?)"
         );
         $msg->execute([$ticketId, (int) $client['id'], $message]);
+        SupportAttachments::save($pdo, $ticketId, (int) $pdo->lastInsertId(), $images);
         $pdo->commit();
     } catch (\Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($e instanceof InvalidArgumentException) jsonResponse(['success' => false, 'message' => $e->getMessage()], 422);
         throw $e;
     }
     $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
@@ -304,7 +354,7 @@ if ($action === 'support_thread' && $method === 'GET') {
     jsonResponse([
         'success' => true,
         'ticket' => $ticket,
-        'messages' => array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC)),
+        'messages' => SupportAttachments::withMetadata($pdo, $ticketId, array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC))),
     ]);
 }
 
@@ -313,20 +363,24 @@ if ($action === 'support_reply' && $method === 'POST') {
     $body = requestBody();
     $ticketId = (int) ($body['ticket_id'] ?? 0);
     $message = trim((string) ($body['message'] ?? ''));
+    $images = supportImages($body);
     $ticket = supportTicketForShop($pdo, $ticketId, (int) $client['shop_id']);
     if ($ticket === null) {
         jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
     }
-    if ($message === '' || mb_strlen($message) > 8000) {
+    if (($message === '' && !$images) || mb_strlen($message) > 8000) {
         jsonResponse(['success' => false, 'message' => 'Message must be between 1 and 8000 characters.'], 422);
     }
+    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images, $client) {
     $stmt = $pdo->prepare(
         "INSERT INTO support_messages (ticket_id, client_id, sender, body)
          VALUES (?, ?, 'customer', ?)"
     );
     $stmt->execute([$ticketId, (int) $client['id'], $message]);
+    SupportAttachments::save($pdo, $ticketId, (int) $pdo->lastInsertId(), $images);
     $pdo->prepare("UPDATE support_tickets SET status = 'open', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
+    });
     $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
     if ($from !== '') {
         (new SupportMailer($from))->send($from, "Reply on NexaPOS ticket #$ticketId",
@@ -388,7 +442,7 @@ if ($action === 'admin_support_thread' && $method === 'GET') {
     jsonResponse([
         'success' => true,
         'ticket' => normalizeSupportTicket($ticket),
-        'messages' => array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC)),
+        'messages' => SupportAttachments::withMetadata($pdo, $ticketId, array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC))),
     ]);
 }
 
@@ -405,22 +459,26 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $body = requestBody();
     $ticketId = (int) ($body['ticket_id'] ?? 0);
     $message = trim((string) ($body['message'] ?? ''));
+    $images = supportImages($body);
     $exists = $pdo->prepare('SELECT subject, customer_email FROM support_tickets WHERE id = ?');
     $exists->execute([$ticketId]);
     $recipient = $exists->fetch(PDO::FETCH_ASSOC);
     if ($recipient === false) {
         jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
     }
-    if ($message === '' || mb_strlen($message) > 8000) {
+    if (($message === '' && !$images) || mb_strlen($message) > 8000) {
         jsonResponse(['success' => false, 'message' => 'Message must be between 1 and 8000 characters.'], 422);
     }
+    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images) {
     $stmt = $pdo->prepare(
         "INSERT INTO support_messages (ticket_id, client_id, sender, body)
          VALUES (?, NULL, 'support', ?)"
     );
     $stmt->execute([$ticketId, $message]);
+    SupportAttachments::save($pdo, $ticketId, (int) $pdo->lastInsertId(), $images);
     $pdo->prepare("UPDATE support_tickets SET status = 'pending', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
+    });
     $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
     $email = (string) ($recipient['customer_email'] ?? '');
     if ($from !== '' && $email !== '') {

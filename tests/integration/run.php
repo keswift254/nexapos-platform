@@ -374,6 +374,7 @@ check($nativeStatus['status'] === 200 && ($nativeStatus['body']['business_name']
 $supportOwner = register($baseUrl, 'support-owner-device');
 check($supportOwner['status'] === 201, 'Could not register the support fixture device.');
 $supportKey = $supportOwner['body']['api_key'];
+$pdo->prepare("UPDATE shops SET business_name = 'Support Fixture Shop' WHERE id = (SELECT shop_id FROM clients WHERE device_id = 'support-owner-device')")->execute();
 $emptyList = request($baseUrl, 'support_list', 'GET', null, ['Authorization: Bearer ' . $supportKey]);
 check($emptyList['status'] === 200 && $emptyList['body']['tickets'] === [], 'A shop with no tickets must list none.');
 check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Hi', 'message' => 'short subject'], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
@@ -421,5 +422,74 @@ check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'mes
     'A device from a different shop could reply to another shop\'s support ticket.');
 check(request($baseUrl, 'support_list', 'GET', null, [])['status'] === 401, 'support_list was reachable with no API key.');
 check(request($baseUrl, 'support_open', 'POST', ['subject' => 'x', 'message' => 'y'], [])['status'] === 401, 'support_open was reachable with no API key.');
+
+// The vendor's side of support: see and answer every shop's tickets,
+// not just one shop's own (support_list/support_thread/support_reply
+// above are shop-scoped and never reach these).
+$adminSupportThread = static function (int $ticketId) use ($baseUrl, $adminSecret): array {
+    $ch = curl_init($baseUrl . '?action=admin_support_thread&ticket_id=' . $ticketId);
+    curl_setopt_array($ch, [
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'X-Admin-Secret: ' . $adminSecret],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $raw = curl_exec($ch);
+    if ($raw === false) {
+        throw new RuntimeException(curl_error($ch));
+    }
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['status' => $status, 'body' => json_decode($raw, true), 'raw' => $raw];
+};
+
+check(request($baseUrl, 'admin_list_support_tickets', 'GET', null, [])['status'] === 401,
+    'admin_list_support_tickets was reachable with no admin secret.');
+$noSecretThread = curl_init($baseUrl . '?action=admin_support_thread&ticket_id=' . $ticketId);
+curl_setopt_array($noSecretThread, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20]);
+curl_exec($noSecretThread);
+check((int) curl_getinfo($noSecretThread, CURLINFO_HTTP_CODE) === 401, 'admin_support_thread was reachable with no admin secret.');
+curl_close($noSecretThread);
+check(request($baseUrl, 'admin_support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'x'], [])['status'] === 401,
+    'admin_support_reply was reachable with no admin secret.');
+
+$adminList = request($baseUrl, 'admin_list_support_tickets', 'GET', null, ['X-Admin-Secret: ' . $adminSecret]);
+check($adminList['status'] === 200, 'Could not list support tickets as admin: ' . $adminList['raw']);
+$listed = null;
+foreach ($adminList['body']['tickets'] as $row) {
+    if ((int) $row['id'] === $ticketId) { $listed = $row; break; }
+}
+check($listed !== null, 'The earlier ticket did not appear in the admin list.');
+check($listed['business_name'] === 'Support Fixture Shop' && $listed['status'] === 'open' && (int) $listed['message_count'] === 2,
+    'Admin list row is wrong: ' . json_encode($listed));
+
+$adminThread = $adminSupportThread($ticketId);
+check($adminThread['status'] === 200 && (int) $adminThread['body']['ticket']['id'] === $ticketId
+    && count($adminThread['body']['messages']) === 2, 'Admin could not read the full thread: ' . $adminThread['raw']);
+
+check($asAdmin('admin_support_reply', ['ticket_id' => $ticketId, 'message' => ''])['status'] === 422,
+    'An empty admin reply was accepted.');
+$adminReply = $asAdmin('admin_support_reply', ['ticket_id' => $ticketId, 'message' => 'Please try reinstalling the app.']);
+check($adminReply['status'] === 200, 'Could not reply as admin: ' . $adminReply['raw']);
+$afterAdminReply = $adminSupportThread($ticketId);
+check(count($afterAdminReply['body']['messages']) === 3
+    && $afterAdminReply['body']['messages'][2]['sender'] === 'support'
+    && $afterAdminReply['body']['messages'][2]['body'] === 'Please try reinstalling the app.',
+    'The admin reply did not land in the thread.');
+check($afterAdminReply['body']['ticket']['status'] === 'pending',
+    'An admin reply must mark the ticket pending (waiting on the customer), not leave it open.');
+
+// The customer replying again must put it back on the vendor's plate.
+$customerReplyAgain = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Still not working.'], ['Authorization: Bearer ' . $supportKey]);
+check($customerReplyAgain['status'] === 200, 'Could not reply as the customer again: ' . $customerReplyAgain['raw']);
+check($adminSupportThread($ticketId)['body']['ticket']['status'] === 'open',
+    'A customer reply must put the ticket back to open (waiting on the vendor).');
+
+check($asAdmin('admin_close_support_ticket', ['ticket_id' => 999999999])['status'] === 404,
+    'Closing a non-existent ticket did not 404.');
+$closed = $asAdmin('admin_close_support_ticket', ['ticket_id' => $ticketId]);
+check($closed['status'] === 200, 'Could not close the ticket: ' . $closed['raw']);
+check($adminSupportThread($ticketId)['body']['ticket']['status'] === 'closed', 'The ticket was not actually closed.');
+
+check($adminSupportThread(999999999)['status'] === 404, 'admin_support_thread did not 404 for a non-existent ticket.');
 
 echo "Platform integration tests passed.\n";

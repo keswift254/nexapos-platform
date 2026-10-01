@@ -300,6 +300,97 @@ if ($action === 'support_reply' && $method === 'POST') {
     jsonResponse(['success' => true]);
 }
 
+// The vendor's side of support - every action above is shop-scoped (a
+// device can only ever see its own shop's tickets); these are
+// requireAdmin-gated instead, so the vendor can see and answer every
+// shop's tickets from one place (nexapos_license's dashboard.html).
+if ($action === 'admin_list_support_tickets' && $method === 'GET') {
+    requireAdmin($platformConfig);
+    $stmt = $pdo->query(
+        "SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
+                support_tickets.subject, support_tickets.status,
+                support_tickets.created_at, support_tickets.updated_at,
+                (SELECT COUNT(*) FROM support_messages WHERE support_messages.ticket_id = support_tickets.id) AS message_count
+         FROM support_tickets
+         JOIN shops ON shops.id = support_tickets.shop_id
+         ORDER BY FIELD(support_tickets.status, 'open', 'pending', 'closed'), support_tickets.updated_at DESC
+         LIMIT 500"
+    );
+    jsonResponse(['success' => true, 'tickets' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+}
+
+if ($action === 'admin_support_thread' && $method === 'GET') {
+    requireAdmin($platformConfig);
+    $ticketId = (int) ($_GET['ticket_id'] ?? 0);
+    $stmt = $pdo->prepare(
+        'SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
+                support_tickets.subject, support_tickets.status,
+                support_tickets.created_at, support_tickets.updated_at
+         FROM support_tickets JOIN shops ON shops.id = support_tickets.shop_id
+         WHERE support_tickets.id = ?'
+    );
+    $stmt->execute([$ticketId]);
+    $ticket = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($ticket === false) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
+    }
+    $messages = $pdo->prepare(
+        'SELECT id, sender, body, created_at FROM support_messages
+         WHERE ticket_id = ? ORDER BY id ASC LIMIT 500'
+    );
+    $messages->execute([$ticketId]);
+    jsonResponse(['success' => true, 'ticket' => $ticket, 'messages' => $messages->fetchAll(PDO::FETCH_ASSOC)]);
+}
+
+/**
+ * The vendor's reply. Marks the ticket 'pending' (waiting on the
+ * customer now) - the mirror of what the customer's own support_reply
+ * does to 'open' (waiting on us) - so admin_list_support_tickets' default
+ * ordering always puts tickets that actually need the vendor's attention
+ * first. client_id is NULL: this message did not come from any
+ * device/client row, so there is nothing real to attribute it to.
+ */
+if ($action === 'admin_support_reply' && $method === 'POST') {
+    requireAdmin($platformConfig);
+    $body = requestBody();
+    $ticketId = (int) ($body['ticket_id'] ?? 0);
+    $message = trim((string) ($body['message'] ?? ''));
+    $exists = $pdo->prepare('SELECT 1 FROM support_tickets WHERE id = ?');
+    $exists->execute([$ticketId]);
+    if ($exists->fetchColumn() === false) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
+    }
+    if ($message === '' || mb_strlen($message) > 8000) {
+        jsonResponse(['success' => false, 'message' => 'Message must be between 1 and 8000 characters.'], 422);
+    }
+    $stmt = $pdo->prepare(
+        "INSERT INTO support_messages (ticket_id, client_id, sender, body)
+         VALUES (?, NULL, 'support', ?)"
+    );
+    $stmt->execute([$ticketId, $message]);
+    $pdo->prepare("UPDATE support_tickets SET status = 'pending', updated_at = UTC_TIMESTAMP() WHERE id = ?")
+        ->execute([$ticketId]);
+    jsonResponse(['success' => true]);
+}
+
+/**
+ * Lets the vendor mark a ticket resolved, with or without a final reply
+ * of its own - otherwise every ticket ever opened stays 'open' or
+ * 'pending' forever, with no way to say "done" the way support_reply's
+ * 'open' and admin_support_reply's 'pending' already can for each other.
+ */
+if ($action === 'admin_close_support_ticket' && $method === 'POST') {
+    requireAdmin($platformConfig);
+    $body = requestBody();
+    $ticketId = (int) ($body['ticket_id'] ?? 0);
+    $update = $pdo->prepare("UPDATE support_tickets SET status = 'closed', updated_at = UTC_TIMESTAMP() WHERE id = ?");
+    $update->execute([$ticketId]);
+    if ($update->rowCount() !== 1) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
+    }
+    jsonResponse(['success' => true]);
+}
+
 // Render's health check hits this - deliberately goes through
 // Database::connection() above rather than skipping it, so a deploy
 // only reports healthy once the DB is actually reachable, not just PHP.

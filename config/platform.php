@@ -26,6 +26,9 @@ $config = [
     // choice, but a separate env var, so each service still owns its
     // own config independently. Never hardcode a real value here.
     'admin_secret' => getenv('PLATFORM_ADMIN_SECRET') ?: '',
+    // Set in the private platform.local.php after creating the mailbox in
+    // DirectAdmin. An empty address keeps ticket email disabled.
+    'support_email_from' => getenv('PLATFORM_SUPPORT_EMAIL_FROM') ?: '',
     // Browser-hosted admin dashboard origins. Flutter/curl requests do
     // not send Origin and are unaffected by CORS.
     'cors_allowed_origins' => array_values(array_filter(array_map(

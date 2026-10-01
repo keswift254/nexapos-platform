@@ -56,7 +56,22 @@ function supportTicketForShop(PDO $pdo, int $ticketId, int $shopId): ?array
     $stmt = $pdo->prepare('SELECT id, shop_id, subject, status, created_at, updated_at FROM support_tickets WHERE id = ? AND shop_id = ?');
     $stmt->execute([$ticketId, $shopId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ?: null;
+    return $row ? normalizeSupportTicket($row) : null;
+}
+
+function normalizeSupportTicket(array $ticket): array
+{
+    $ticket['id'] = (int) $ticket['id'];
+    if (isset($ticket['shop_id'])) {
+        $ticket['shop_id'] = (int) $ticket['shop_id'];
+    }
+    return $ticket;
+}
+
+function normalizeSupportMessage(array $message): array
+{
+    $message['id'] = (int) $message['id'];
+    return $message;
 }
 
 /**
@@ -224,7 +239,7 @@ if ($action === 'support_list' && $method === 'GET') {
          FROM support_tickets WHERE shop_id = ? ORDER BY updated_at DESC, id DESC LIMIT 100'
     );
     $stmt->execute([(int) $client['shop_id']]);
-    jsonResponse(['success' => true, 'tickets' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+    jsonResponse(['success' => true, 'tickets' => array_map('normalizeSupportTicket', $stmt->fetchAll(PDO::FETCH_ASSOC))]);
 }
 
 if ($action === 'support_open' && $method === 'POST') {
@@ -274,7 +289,7 @@ if ($action === 'support_thread' && $method === 'GET') {
     jsonResponse([
         'success' => true,
         'ticket' => $ticket,
-        'messages' => $messages->fetchAll(PDO::FETCH_ASSOC),
+        'messages' => array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC)),
     ]);
 }
 
@@ -316,7 +331,7 @@ if ($action === 'admin_list_support_tickets' && $method === 'GET') {
          ORDER BY FIELD(support_tickets.status, 'open', 'pending', 'closed'), support_tickets.updated_at DESC
          LIMIT 500"
     );
-    jsonResponse(['success' => true, 'tickets' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+    jsonResponse(['success' => true, 'tickets' => array_map('normalizeSupportTicket', $stmt->fetchAll(PDO::FETCH_ASSOC))]);
 }
 
 if ($action === 'admin_support_thread' && $method === 'GET') {
@@ -339,7 +354,11 @@ if ($action === 'admin_support_thread' && $method === 'GET') {
          WHERE ticket_id = ? ORDER BY id ASC LIMIT 500'
     );
     $messages->execute([$ticketId]);
-    jsonResponse(['success' => true, 'ticket' => $ticket, 'messages' => $messages->fetchAll(PDO::FETCH_ASSOC)]);
+    jsonResponse([
+        'success' => true,
+        'ticket' => normalizeSupportTicket($ticket),
+        'messages' => array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC)),
+    ]);
 }
 
 /**

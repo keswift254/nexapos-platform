@@ -56,4 +56,11 @@ if (getenv('NEXAPOS_IGNORE_LOCAL_CONFIG') !== '1' && is_file($localConfig)) {
     $config = array_replace_recursive($config, require $localConfig);
 }
 
+// Optional separate support settings avoid editing payment credentials.
+$supportConfig = __DIR__ . '/support.local.php';
+if (getenv('NEXAPOS_IGNORE_LOCAL_CONFIG') !== '1' && is_file($supportConfig)) {
+    $support = require $supportConfig;
+    $config['support_email_from'] = (string) ($support['support_email_from'] ?? $config['support_email_from']);
+}
+
 return $config;

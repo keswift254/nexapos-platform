@@ -30,6 +30,14 @@ jobs:
           cp app/Services/SupportAttachments.php package/app/Services/
           cp app/Services/SupportMailer.php package/app/Services/
           cp config/platform.php package/config/platform.php
+          cat > package/config/support.local.php <<'PHP'
+          <?php
+          declare(strict_types=1);
+
+          return [
+              'support_email_from' => 'support@nexapos.cc',
+          ];
+          PHP
           cp sql/migrations/20261002_001_support_customer_email.sql package/sql/migrations/
           cp sql/migrations/20261002_002_support_attachments.sql package/sql/migrations/
 

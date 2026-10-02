@@ -1,0 +1,44 @@
+name: Verify production Support 1.0.59
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-production-1.0.59.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify migrated Support admin API
+        env:
+          ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_SECRET"
+
+          tickets="$(mktemp)"
+          code="$(curl -sS -o "$tickets" -w '%{http_code}' --max-time 30             -H "X-Admin-Secret: $ADMIN_SECRET"             'https://sync.nexapos.cc/index.php?action=admin_list_support_tickets')"
+          echo "tickets HTTP $code"
+          cat "$tickets"; echo
+          test "$code" = "200"
+          python3 - "$tickets" <<'PY'
+          import json, sys
+          data=json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data.get('success') is True
+          assert isinstance(data.get('tickets'), list)
+          print('VERIFIED admin ticket list (customer_email query succeeded).')
+          PY
+
+          photo="$(mktemp)"
+          photo_code="$(curl -sS -o "$photo" -w '%{http_code}' --max-time 30             -H "X-Admin-Secret: $ADMIN_SECRET"             'https://sync.nexapos.cc/index.php?action=admin_support_attachment&id=0')"
+          echo "photo probe HTTP $photo_code"
+          cat "$photo"; echo
+          test "$photo_code" = "404"
+          grep -q 'Photo not found' "$photo"
+          echo 'VERIFIED support attachment route/table.'

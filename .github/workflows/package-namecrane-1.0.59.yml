@@ -1,0 +1,43 @@
+name: Package NameCrane 1.0.59 backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/package-namecrane-1.0.59.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build DirectAdmin deployment bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in             public/index.php             app/Services/SupportAttachments.php             app/Services/SupportMailer.php             config/platform.php             sql/migrations/20261002_001_support_customer_email.sql             sql/migrations/20261002_002_support_attachments.sql; do
+            test -f "$f"
+          done
+
+          rm -rf package
+          mkdir -p package/public_html package/app/Services package/config package/sql/migrations
+          cp public/index.php package/public_html/index.php
+          cp app/Services/SupportAttachments.php package/app/Services/
+          cp app/Services/SupportMailer.php package/app/Services/
+          cp config/platform.php package/config/platform.php
+          cp sql/migrations/20261002_001_support_customer_email.sql package/sql/migrations/
+          cp sql/migrations/20261002_002_support_attachments.sql package/sql/migrations/
+
+          find package -type f -maxdepth 6 -print
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NexaPOS-Platform-Backend-1.0.59-NameCrane
+          path: package/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,8 @@
+# Support email on NameCrane
+
+1. In the NameCrane DirectAdmin account for **nexapos.cc**, switch to **User** level if needed. Open **E-mail Manager → E-mail Accounts → Create Account**, choose `support`, set a strong password, and save. If the plan has no email accounts, create the address in NameCrane's CraneMail service instead and use its DNS/connection guide.
+2. Follow the panel's DNS instructions for MX, SPF and DKIM. Preserve any existing mail records until you know where current domain mail is hosted. Send a message to `support@nexapos.cc` from a different mailbox and reply from webmail to confirm both directions.
+3. In the private file `/domains/sync.nexapos.cc/config/platform.local.php`, add `'support_email_from' => 'support@nexapos.cc',` to the returned array. Do not put the mailbox password in the app, repository, or public_html. The PHP API sends through the hosting account's local mail transport and uses that address as From and Reply-To.
+4. After deploying the updated API and migration, create a test ticket from the app with an email address. Confirm receipt at the customer mailbox and at the support mailbox. Reply in the admin dashboard and confirm the customer gets an email. The ticket is saved even if the mail transport rejects a notification; check the server's error log and NameCrane's outgoing mail logs if the message does not arrive.
+
+The new `20261002_001_support_customer_email.sql` migration adds the optional contact address to the existing Aiven `nexapos_platform` database. Back up that live database before the updated API is deployed. Do not bootstrap a new database during this change.

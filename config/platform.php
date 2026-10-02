@@ -26,6 +26,9 @@ $config = [
     // choice, but a separate env var, so each service still owns its
     // own config independently. Never hardcode a real value here.
     'admin_secret' => getenv('PLATFORM_ADMIN_SECRET') ?: '',
+    // Set in the private platform.local.php after creating the mailbox in
+    // DirectAdmin. An empty address keeps ticket email disabled.
+    'support_email_from' => getenv('PLATFORM_SUPPORT_EMAIL_FROM') ?: '',
     // Browser-hosted admin dashboard origins. Flutter/curl requests do
     // not send Origin and are unaffected by CORS.
     'cors_allowed_origins' => array_values(array_filter(array_map(
@@ -51,6 +54,13 @@ $config = [
 $localConfig = __DIR__ . '/platform.local.php';
 if (getenv('NEXAPOS_IGNORE_LOCAL_CONFIG') !== '1' && is_file($localConfig)) {
     $config = array_replace_recursive($config, require $localConfig);
+}
+
+// Optional separate support settings avoid editing payment credentials.
+$supportConfig = __DIR__ . '/support.local.php';
+if (getenv('NEXAPOS_IGNORE_LOCAL_CONFIG') !== '1' && is_file($supportConfig)) {
+    $support = require $supportConfig;
+    $config['support_email_from'] = (string) ($support['support_email_from'] ?? $config['support_email_from']);
 }
 
 return $config;

@@ -383,12 +383,16 @@ check(request($baseUrl, 'support_open', 'POST', ['subject' => str_repeat('x', 16
     'A subject over 160 characters was accepted.');
 check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => ''], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
     'An empty message was accepted.');
-$opened = request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'My till will not sync.'], ['Authorization: Bearer ' . $supportKey]);
+check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'Help', 'email' => "bad\nrecipient@example.com"], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
+    'A malformed contact email was accepted.');
+$opened = request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'My till will not sync.', 'email' => 'owner@example.com'], ['Authorization: Bearer ' . $supportKey]);
 check($opened['status'] === 201 && ($opened['body']['ticket_id'] ?? 0) > 0, 'Could not open a support ticket: ' . $opened['raw']);
 $ticketId = $opened['body']['ticket_id'];
 $list = request($baseUrl, 'support_list', 'GET', null, ['Authorization: Bearer ' . $supportKey]);
 check($list['status'] === 200 && count($list['body']['tickets']) === 1 && $list['body']['tickets'][0]['id'] === $ticketId
-    && $list['body']['tickets'][0]['status'] === 'open', 'The opened ticket did not appear in the list: ' . $list['raw']);
+    && $list['body']['tickets'][0]['status'] === 'open'
+    && $list['body']['tickets'][0]['customer_email'] === 'owner@example.com',
+    'The opened ticket did not retain its contact email: ' . $list['raw']);
 $supportThread = static function (string $key, int $ticketId) use ($baseUrl): array {
     $ch = curl_init($baseUrl . '?action=support_thread&ticket_id=' . $ticketId);
     curl_setopt_array($ch, [
@@ -420,6 +424,10 @@ check($supportThread($otherShop['body']['api_key'], $ticketId)['status'] === 404
     'A device from a different shop could read another shop\'s support ticket.');
 check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Should not land'], ['Authorization: Bearer ' . $otherShop['body']['api_key']])['status'] === 404,
     'A device from a different shop could reply to another shop\'s support ticket.');
+check(request($baseUrl, 'support_close', 'POST', ['ticket_id' => $ticketId], ['Authorization: Bearer ' . $otherShop['body']['api_key']])['status'] === 404,
+    'A device from a different shop could close another shop\'s support ticket.');
+check(request($baseUrl, 'support_close', 'POST', ['ticket_id' => $ticketId], [])['status'] === 401,
+    'support_close was reachable with no API key.');
 check(request($baseUrl, 'support_list', 'GET', null, [])['status'] === 401, 'support_list was reachable with no API key.');
 check(request($baseUrl, 'support_open', 'POST', ['subject' => 'x', 'message' => 'y'], [])['status'] === 401, 'support_open was reachable with no API key.');
 
@@ -477,8 +485,14 @@ check(count($afterAdminReply['body']['messages']) === 3
     'The admin reply did not land in the thread.');
 check($afterAdminReply['body']['ticket']['status'] === 'pending',
     'An admin reply must mark the ticket pending (waiting on the customer), not leave it open.');
+check($afterAdminReply['body']['ticket']['customer_email'] === 'owner@example.com',
+    'Admin thread lost the customer contact email.');
 
-// The customer replying again must put it back on the vendor's plate.
+$shopClosed = request($baseUrl, 'support_close', 'POST', ['ticket_id' => $ticketId], ['Authorization: Bearer ' . $supportKey]);
+check($shopClosed['status'] === 200 && $supportThread($supportKey, $ticketId)['body']['ticket']['status'] === 'closed',
+    'The shop could not close its ticket.');
+
+// Replying to a closed ticket reopens it and puts it back on the vendor's plate.
 $customerReplyAgain = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Still not working.'], ['Authorization: Bearer ' . $supportKey]);
 check($customerReplyAgain['status'] === 200, 'Could not reply as the customer again: ' . $customerReplyAgain['raw']);
 check($adminSupportThread($ticketId)['body']['ticket']['status'] === 'open',
@@ -493,3 +507,27 @@ check($adminSupportThread($ticketId)['body']['ticket']['status'] === 'closed', '
 check($adminSupportThread(999999999)['status'] === 404, 'admin_support_thread did not 404 for a non-existent ticket.');
 
 echo "Platform integration tests passed.\n";
+
+// Photos are private, validated, and attached to the same message transaction.
+$png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XkAAAAASUVORK5CYII=';
+$photoReply = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => '', 'attachments' => [['data' => $png]]], ['Authorization: Bearer ' . $supportKey]);
+check($photoReply['status'] === 200, 'Photo-only reply failed: ' . $photoReply['raw']);
+$photoThread = $supportThread($supportKey, $ticketId)['body'];
+$lastMessage = end($photoThread['messages']);
+check(count($lastMessage['attachments']) === 1, 'Photo metadata missing.');
+$photoId = $lastMessage['attachments'][0]['id'];
+$readPhoto = static function (array $headers, string $action = 'support_attachment') use ($baseUrl, $photoId): array {
+    $ch = curl_init($baseUrl . '?action=' . $action . '&id=' . $photoId);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers]);
+    $bytes = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
+    return ['status' => $status, 'bytes' => $bytes];
+};
+check($readPhoto([])['status'] === 401, 'Anonymous photo access was allowed.');
+check($readPhoto(['Authorization: Bearer ' . $otherShop['body']['api_key']])['status'] === 404, 'Cross-shop photo access was allowed.');
+check($readPhoto(['Authorization: Bearer ' . $supportKey])['bytes'] === base64_decode($png), 'Photo bytes changed.');
+check($readPhoto(['X-Admin-Secret: ' . $adminSecret], 'admin_support_attachment')['status'] === 200, 'Admin cannot read photo.');
+foreach ([['data' => base64_encode('<svg onload="alert(1)"></svg>')], ['data' => 'bad base64!']] as $badPhoto) {
+    check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Unsafe', 'attachments' => [$badPhoto]], ['Authorization: Bearer ' . $supportKey])['status'] === 422, 'Invalid image accepted.');
+}
+check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Too many', 'attachments' => array_fill(0, 5, ['data' => $png])], ['Authorization: Bearer ' . $supportKey])['status'] === 422, 'Too many photos accepted.');
+echo "Support photo access and validation tests passed.\n";

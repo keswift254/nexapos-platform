@@ -269,6 +269,7 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     shop_id INT NOT NULL,
     opened_by_client_id INT NOT NULL,
     subject VARCHAR(160) NOT NULL,
+    customer_email VARCHAR(254) NULL,
     status ENUM('open','pending','closed') NOT NULL DEFAULT 'open',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -288,3 +289,15 @@ CREATE TABLE IF NOT EXISTS support_messages (
     FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES clients(id)
 );
+CREATE TABLE IF NOT EXISTS support_attachments (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ticket_id BIGINT NOT NULL,
+    message_id BIGINT NOT NULL,
+    mime_type VARCHAR(32) NOT NULL,
+    byte_size INT UNSIGNED NOT NULL,
+    image_data MEDIUMBLOB NOT NULL,
+    INDEX idx_support_attachment_ticket (ticket_id),
+    INDEX idx_support_attachment_message (message_id),
+    FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES support_messages(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

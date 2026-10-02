@@ -12,4 +12,7 @@ return [
     'intasend_secret_key' => 'YOUR_INTASEND_TEST_SECRET_KEY',
     'intasend_publishable_key' => 'YOUR_INTASEND_TEST_PUBLISHABLE_KEY',
     'intasend_webhook_challenge' => 'YOUR_INTASEND_WEBHOOK_CHALLENGE',
+    // Create this mailbox first, then enable customer ticket emails.
+    // The host's local mail transport sends from this address.
+    'support_email_from' => 'support@nexapos.cc',
 ];

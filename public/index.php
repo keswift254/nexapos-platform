@@ -410,7 +410,8 @@ if ($action === 'admin_list_support_tickets' && $method === 'GET') {
         "SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
                 support_tickets.subject, support_tickets.customer_email, support_tickets.status,
                 support_tickets.created_at, support_tickets.updated_at,
-                (SELECT COUNT(*) FROM support_messages WHERE support_messages.ticket_id = support_tickets.id) AS message_count
+                 (SELECT COUNT(*) FROM support_messages WHERE support_messages.ticket_id = support_tickets.id) AS message_count,
+                 (SELECT COUNT(*) FROM support_attachments WHERE support_attachments.ticket_id = support_tickets.id) AS attachment_count
          FROM support_tickets
          JOIN shops ON shops.id = support_tickets.shop_id
          ORDER BY FIELD(support_tickets.status, 'open', 'pending', 'closed'), support_tickets.updated_at DESC

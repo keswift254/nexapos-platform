@@ -385,7 +385,8 @@ check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question'
     'An empty message was accepted.');
 check(request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'Help', 'email' => "bad\nrecipient@example.com"], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
     'A malformed contact email was accepted.');
-$opened = request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'My till will not sync.', 'email' => 'owner@example.com'], ['Authorization: Bearer ' . $supportKey]);
+$png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XkAAAAASUVORK5CYII=';
+$opened = request($baseUrl, 'support_open', 'POST', ['subject' => 'Payment question', 'message' => 'My till will not sync.', 'email' => 'owner@example.com', 'attachments' => [['data' => $png]]], ['Authorization: Bearer ' . $supportKey]);
 check($opened['status'] === 201 && ($opened['body']['ticket_id'] ?? 0) > 0, 'Could not open a support ticket: ' . $opened['raw']);
 $ticketId = $opened['body']['ticket_id'];
 $list = request($baseUrl, 'support_list', 'GET', null, ['Authorization: Bearer ' . $supportKey]);
@@ -412,6 +413,8 @@ $thread = $supportThread($supportKey, $ticketId);
 check($thread['status'] === 200 && $thread['body']['ticket']['id'] === $ticketId
     && count($thread['body']['messages']) === 1 && $thread['body']['messages'][0]['sender'] === 'customer'
     && $thread['body']['messages'][0]['body'] === 'My till will not sync.', 'The ticket thread was not readable after opening: ' . $thread['raw']);
+check(count($thread['body']['messages'][0]['attachments'] ?? []) === 1,
+    'Customer thread lost the photo attached to a new ticket.');
 check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => ''], ['Authorization: Bearer ' . $supportKey])['status'] === 422,
     'An empty reply was accepted.');
 $reply = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Still broken after a reinstall.'], ['Authorization: Bearer ' . $supportKey]);
@@ -467,12 +470,16 @@ foreach ($adminList['body']['tickets'] as $row) {
     if ((int) $row['id'] === $ticketId) { $listed = $row; break; }
 }
 check($listed !== null, 'The earlier ticket did not appear in the admin list.');
-check($listed['business_name'] === 'Support Fixture Shop' && $listed['status'] === 'open' && (int) $listed['message_count'] === 2,
+check($listed['business_name'] === 'Support Fixture Shop' && $listed['status'] === 'open' && (int) $listed['message_count'] === 2
+    && (int) $listed['attachment_count'] === 1,
     'Admin list row is wrong: ' . json_encode($listed));
 
 $adminThread = $adminSupportThread($ticketId);
 check($adminThread['status'] === 200 && (int) $adminThread['body']['ticket']['id'] === $ticketId
     && count($adminThread['body']['messages']) === 2, 'Admin could not read the full thread: ' . $adminThread['raw']);
+check(count($adminThread['body']['messages'][0]['attachments'] ?? []) === 1
+    && $adminThread['body']['messages'][0]['attachments'][0]['id'] === $thread['body']['messages'][0]['attachments'][0]['id'],
+    'Admin thread lost the photo attached to a new ticket.');
 
 check($asAdmin('admin_support_reply', ['ticket_id' => $ticketId, 'message' => ''])['status'] === 422,
     'An empty admin reply was accepted.');
@@ -509,7 +516,6 @@ check($adminSupportThread(999999999)['status'] === 404, 'admin_support_thread di
 echo "Platform integration tests passed.\n";
 
 // Photos are private, validated, and attached to the same message transaction.
-$png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XkAAAAASUVORK5CYII=';
 $photoReply = request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => '', 'attachments' => [['data' => $png]]], ['Authorization: Bearer ' . $supportKey]);
 check($photoReply['status'] === 200, 'Photo-only reply failed: ' . $photoReply['raw']);
 $photoThread = $supportThread($supportKey, $ticketId)['body'];

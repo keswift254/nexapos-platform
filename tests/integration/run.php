@@ -231,6 +231,42 @@ $conflictingRelay['row_id'] = 'lan-relay-conflict';
 $conflictingRelay['payload']['id'] = 'lan-relay-conflict';
 check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$conflictingRelay]], ['Authorization: Bearer ' . $ownerKey])['status'] === 422,
     'A conflicting replay of the same source revision was accepted.');
+// A product revision re-sent after a lost acknowledgement may carry a different
+// stockQty / imagePath: the device recomputes stock without bumping local_rev,
+// and no receiver applies either field. That must be accepted as already
+// recorded - refusing it stalled a shop's whole upload queue in production -
+// while a real difference (price) or another table's field must still be refused.
+$productStamp = gmdate('Y-m-d\TH:i:s') . '.111111Z';
+$productChange = static fn (array $extra = [], int $rev = 91): array => [
+    'table_name' => 'products', 'row_id' => 'stock-resend-product', 'local_rev' => $rev, 'updated_at' => $productStamp,
+    'payload' => array_merge([
+        'id' => 'stock-resend-product', 'localRev' => $rev, 'updatedAt' => $productStamp,
+        'createdByDeviceId' => 'owner-device', 'name' => 'Sugar', 'priceMinor' => 15000,
+        'stockQty' => 10, 'imagePath' => null,
+    ], $extra),
+];
+$ownerAuth = ['Authorization: Bearer ' . $ownerKey];
+check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange()]], $ownerAuth)['status'] === 200,
+    'Could not record the product fixture.');
+$stockOnly = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['stockQty' => 7, 'imagePath' => 'C:\\pics\\a.png'])]], $ownerAuth);
+check($stockOnly['status'] === 200, 'A re-sent product revision differing only in stockQty/imagePath was refused: ' . $stockOnly['raw']);
+check((int) $pdo->query("SELECT COUNT(*) FROM sync_changes WHERE device_id = 'owner-device' AND local_rev = 91")->fetchColumn() === 1,
+    'The stock-only resend created a second copy of the revision.');
+check(json_decode((string) $pdo->query("SELECT payload FROM sync_changes WHERE device_id = 'owner-device' AND local_rev = 91")->fetchColumn(), true)['stockQty'] === 10,
+    'The stock-only resend overwrote the stored revision.');
+$priceChange = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['priceMinor' => 99999])]], $ownerAuth);
+check($priceChange['status'] === 422 && str_contains((string) ($priceChange['body']['message'] ?? ''), 'different content'),
+    'A re-sent product revision with a different price was accepted: ' . $priceChange['raw']);
+$extraField = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['barcode' => 'X1'])]], $ownerAuth);
+check($extraField['status'] === 422, 'A re-sent product revision with an extra field was accepted.');
+$otherTableStock = $productChange(['stockQty' => 3], 92);
+$otherTableStock['table_name'] = 'categories';
+$otherTableStock['row_id'] = $otherTableStock['payload']['id'] = 'stock-resend-category';
+check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableStock]], $ownerAuth)['status'] === 200, 'Could not record the category fixture.');
+$otherTableStock['payload']['stockQty'] = 4;
+check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableStock]], $ownerAuth)['status'] === 422,
+    'The device-local allowance leaked to a table other than products.');
+
 $inactiveRelay = $relayChange;
 $inactiveRelay['local_rev'] = 78;
 $inactiveRelay['payload']['localRev'] = 78;

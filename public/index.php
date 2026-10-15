@@ -36,6 +36,32 @@ const SYNCED_TABLE_NAMES = [
     'expenses', 'stock_movements', 'payment_records', 'business_settings',
 ];
 
+/**
+ * Payload fields that are device-local and never applied by any receiver
+ * (see the products adapter in the app's sync_table_registry.dart, which
+ * overwrites both with Value.absent()): stockQty is recomputed on every
+ * device from stock_movements and imagePath is a file path on that one
+ * device. The device recomputes stockQty without bumping local_rev, so a
+ * re-sent revision (e.g. after a lost acknowledgement) can legitimately
+ * carry a different value - that must not be read as "same revision,
+ * different content", which stalls the device's entire upload queue.
+ */
+const DEVICE_LOCAL_PAYLOAD_FIELDS = [
+    'products' => ['stockQty', 'imagePath'],
+];
+
+/** True when a re-sent revision matches the stored one, ignoring device-local fields. */
+function revisionPayloadsMatch(string $tableName, $stored, array $incoming): bool
+{
+    if (!is_array($stored)) {
+        return false;
+    }
+    foreach (DEVICE_LOCAL_PAYLOAD_FIELDS[$tableName] ?? [] as $field) {
+        unset($stored[$field], $incoming[$field]);
+    }
+    return $stored == $incoming;
+}
+
 function jsonResponse(array $payload, int $status = 200): void
 {
     while (ob_get_level() > 0) {
@@ -1128,7 +1154,7 @@ if ($action === 'push_changes' && $method === 'POST') {
                 if ($existing['table_name'] !== $tableName
                     || $existing['row_id'] !== $rowId
                     || $existing['updated_at'] !== $updatedAt
-                    || json_decode((string) $existing['payload'], true) != $payload) {
+                    || !revisionPayloadsMatch($tableName, json_decode((string) $existing['payload'], true), $payload)) {
                     throw new \RuntimeException('A source revision was already recorded with different content.');
                 }
                 continue;

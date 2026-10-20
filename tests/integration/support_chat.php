@@ -155,6 +155,30 @@ check(count($sent) === 1 && ($toShop['to'] ?? '') === 'owner@example.com', 'the 
 check(($toShop['subject'] ?? '') === ($customer['subject'] ?? 'x'), 'it has the shop thread\'s subject');
 check(($toShop['headers']['in-reply-to'] ?? '') === "<nexapos-ticket-$ticketId-customer@sup.test>", 'and points at the shop thread\'s root');
 
+// Delivery is the server's successful reply; reading needs a separate,
+// authenticated acknowledgement from an open shop conversation.
+$beforeRead = array_column(call($baseUrl, 'admin_support_thread', 'GET', null, $admin, ['ticket_id' => $ticketId])['body']['messages'], null, 'id');
+check(array_key_exists('read_at', $beforeRead[$answerId]) && $beforeRead[$answerId]['read_at'] === null,
+    'the admin reply is delivered but not read immediately after sending');
+call($baseUrl, 'support_list', 'GET', null, $auth($key));
+call($baseUrl, 'support_thread', 'GET', null, $auth($key), ['ticket_id' => $ticketId]);
+$stillUnread = array_column(call($baseUrl, 'admin_support_thread', 'GET', null, $admin, ['ticket_id' => $ticketId])['body']['messages'], null, 'id');
+check($stillUnread[$answerId]['read_at'] === null, 'listing/fetching alone does not claim the reply was viewed');
+check(call($baseUrl, 'support_mark_read', 'POST', ['ticket_id' => $ticketId, 'through_message_id' => $answerId])['status'] === 401,
+    'a read receipt needs a device API key');
+check(call($baseUrl, 'support_mark_read', 'POST', ['ticket_id' => $ticketId, 'through_message_id' => $answerId], $auth($otherKey))['status'] === 404,
+    'another shop cannot mark this ticket read');
+check(call($baseUrl, 'support_mark_read', 'POST', ['ticket_id' => $ticketId, 'through_message_id' => $replyId], $auth($key))['status'] === 404,
+    'the shop cannot mark its own message as a support reply');
+$markedRead = call($baseUrl, 'support_mark_read', 'POST', ['ticket_id' => $ticketId, 'through_message_id' => $answerId], $auth($key));
+check($markedRead['status'] === 200 && ($markedRead['body']['marked'] ?? null) === 1,
+    'opening the conversation acknowledges the support reply once');
+$afterRead = array_column(call($baseUrl, 'admin_support_thread', 'GET', null, $admin, ['ticket_id' => $ticketId])['body']['messages'], null, 'id');
+check(is_string($afterRead[$answerId]['read_at']) && $afterRead[$answerId]['read_at'] !== '',
+    'the dashboard receives a read timestamp');
+check((call($baseUrl, 'support_mark_read', 'POST', ['ticket_id' => $ticketId, 'through_message_id' => $answerId], $auth($key))['body']['marked'] ?? null) === 0,
+    'repeated read receipts preserve the original timestamp');
+
 // --- hostile text cannot add headers to a mail
 $evil = call($baseUrl, 'support_open', 'POST', ['subject' => "Hello\r\nBcc: attacker@example.com", 'message' => 'x', 'email' => 'owner@example.com'], $auth($key));
 check($evil['status'] === 201, 'a subject with line breaks is accepted');

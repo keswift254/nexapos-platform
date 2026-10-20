@@ -162,6 +162,7 @@ function supportThreadMessages(PDO $pdo, int $ticketId, bool $forAdmin): array
 {
     $stmt = $pdo->prepare(
         'SELECT m.id, m.sender, m.body, m.reply_to_id, m.created_at'
+        . ($forAdmin ? ', m.read_at' : '')
         . ($forAdmin ? ', c.device_id, c.device_label' : '')
         . ' FROM support_messages m '
         . ($forAdmin ? 'LEFT JOIN clients c ON c.id = m.client_id ' : '')
@@ -498,6 +499,38 @@ if ($action === 'support_thread' && $method === 'GET') {
         'ticket' => $ticket,
         'messages' => supportThreadMessages($pdo, $ticketId, false),
     ]);
+}
+
+// A receipt is sent only by the shop's open conversation screen after it has
+// rendered the messages. Listing tickets and background notifications never
+// mark an admin reply as read. The shop-scoped auth prevents one shop from
+// acknowledging another shop's messages.
+if ($action === 'support_mark_read' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $ticketId = (int) ($body['ticket_id'] ?? 0);
+    $throughId = (int) ($body['through_message_id'] ?? 0);
+    if (supportTicketForShop($pdo, $ticketId, (int) $client['shop_id']) === null) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
+    }
+    if ($throughId <= 0) {
+        jsonResponse(['success' => false, 'message' => 'Choose a support message to mark as read.'], 422);
+    }
+    $found = $pdo->prepare("SELECT id FROM support_messages WHERE id = ? AND ticket_id = ? AND sender = 'support'");
+    $found->execute([$throughId, $ticketId]);
+    if ($found->fetchColumn() === false) {
+        jsonResponse(['success' => false, 'message' => 'Support message not found.'], 404);
+    }
+    $marked = 0;
+    supportWrite($pdo, function () use ($pdo, $ticketId, $throughId, &$marked) {
+        $update = $pdo->prepare(
+            "UPDATE support_messages SET read_at = UTC_TIMESTAMP()
+             WHERE ticket_id = ? AND sender = 'support' AND id <= ? AND read_at IS NULL"
+        );
+        $update->execute([$ticketId, $throughId]);
+        $marked = $update->rowCount();
+    });
+    jsonResponse(['success' => true, 'marked' => $marked]);
 }
 
 if ($action === 'support_reply' && $method === 'POST') {

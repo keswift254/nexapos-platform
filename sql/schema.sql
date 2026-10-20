@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS support_messages (
     sender ENUM('customer','support') NOT NULL,
     body TEXT NOT NULL,
     reply_to_id BIGINT NULL,
+    read_at TIMESTAMP NULL DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_support_messages_ticket (ticket_id, id),
     FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,

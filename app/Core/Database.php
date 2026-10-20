@@ -53,7 +53,13 @@ class Database
                 throw new RuntimeException('DB_SSL_CA does not point to a readable CA certificate.');
             }
             $options[PDO::MYSQL_ATTR_SSL_CA] = $db['ssl_ca'];
-            $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = true;
+            // Not verified against the server hostname: Aiven's certificate does not verify from
+            // NameCrane's PHP/OpenSSL (the connection is still TLS-encrypted). This is what the
+            // production copy on NameCrane has always run; it only matters while the database
+            // is on Aiven - a local database connects over the UNIX socket without TLS.
+            if (defined('PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT')) {
+                $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
+            }
         }
         return new PDO($dsn, $db['user'], $db['pass'], $options);
     }

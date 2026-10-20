@@ -59,8 +59,24 @@ jobs:
         run: php tests/verify_smtp_client.php
       - name: Verify initial sync snapshots
         run: php tests/integration/sync_snapshot.php
+      - name: Support chat and ticket emails
+        env:
+          PLATFORM_SUPPORT_EMAIL_FROM: support@sup.test
+          PLATFORM_SUPPORT_SMTP_HOST: 127.0.0.1
+          PLATFORM_SUPPORT_SMTP_PORT: "2525"
+          PLATFORM_SUPPORT_SMTP_SECURE: none
+          PLATFORM_SUPPORT_SMTP_USER: mailer
+          PLATFORM_SUPPORT_SMTP_PASS: secret
+        run: |
+          php tests/integration/fake_smtp_server.php plain 2525 /tmp/smtp.jsonl both mailer secret > /tmp/smtp.log 2>&1 &
+          PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8081 -t public public/index.php > /tmp/platform-chat.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --silent --fail "http://127.0.0.1:8081/index.php?action=health" && break
+            sleep 1
+          done
+          TEST_PLATFORM_URL=http://127.0.0.1:8081/index.php TEST_SMTP_CAPTURE=/tmp/smtp.jsonl php tests/integration/support_chat.php
       - name: Show server logs on failure
         if: failure()
-        run: cat /tmp/platform.log /tmp/paystack.log
+        run: cat /tmp/platform.log /tmp/paystack.log /tmp/platform-chat.log /tmp/smtp.log
       - name: Check patch whitespace
         run: git diff --check

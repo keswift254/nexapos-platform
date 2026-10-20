@@ -284,6 +284,7 @@ CREATE TABLE IF NOT EXISTS support_messages (
     client_id INT NULL,
     sender ENUM('customer','support') NOT NULL,
     body TEXT NOT NULL,
+    reply_to_id BIGINT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_support_messages_ticket (ticket_id, id),
     FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
@@ -299,5 +300,16 @@ CREATE TABLE IF NOT EXISTS support_attachments (
     INDEX idx_support_attachment_ticket (ticket_id),
     INDEX idx_support_attachment_message (message_id),
     FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES support_messages(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One emoji reaction per side per message (like iMessage tapbacks); see
+-- sql/migrations/20261021_001_support_replies_reactions.sql.
+CREATE TABLE IF NOT EXISTS support_reactions (
+    message_id BIGINT NOT NULL,
+    sender ENUM('customer','support') NOT NULL,
+    emoji VARCHAR(16) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (message_id, sender),
     FOREIGN KEY (message_id) REFERENCES support_messages(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

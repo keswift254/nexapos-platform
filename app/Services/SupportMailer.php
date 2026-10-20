@@ -50,7 +50,13 @@ final class SupportMailer
         ));
     }
 
-    public function send(string $to, string $subject, string $body): bool
+    /**
+     * @param array<string,string> $threading optional 'Message-ID', 'In-Reply-To' and
+     *     'References' headers (each one id such as "<ticket-12@nexapos.cc>", or for
+     *     References a space-separated list) so a mail client keeps related notifications
+     *     in one conversation.
+     */
+    public function send(string $to, string $subject, string $body, array $threading = []): bool
     {
         if (!filter_var($this->from, FILTER_VALIDATE_EMAIL)
             || !filter_var($to, FILTER_VALIDATE_EMAIL)
@@ -58,8 +64,22 @@ final class SupportMailer
         ) {
             return false;
         }
+        $threadingHeaders = [];
+        foreach (['Message-ID', 'In-Reply-To', 'References'] as $name) {
+            $value = trim((string) ($threading[$name] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+            // Only ids like <something@host>, separated by spaces: never a place to smuggle a header.
+            if (!preg_match('/^<[^<>\s@]+@[^<>\s@]+>(?: <[^<>\s@]+@[^<>\s@]+>)*$/', $value)
+                || ($name !== 'References' && str_contains($value, ' '))
+            ) {
+                return false;
+            }
+            $threadingHeaders[$name] = $value;
+        }
         if ($this->smtp !== null) {
-            return $this->smtp->send($this->from, 'NexaPOS Support', $to, $subject, $body);
+            return $this->smtp->send($this->from, 'NexaPOS Support', $to, $subject, $body, $threadingHeaders);
         }
         $headers = [
             'From: NexaPOS Support <' . $this->from . '>',
@@ -67,6 +87,9 @@ final class SupportMailer
             'Content-Type: text/plain; charset=UTF-8',
             'X-Auto-Response-Suppress: All',
         ];
+        foreach ($threadingHeaders as $name => $value) {
+            $headers[] = $name . ': ' . $value;
+        }
         try {
             $sent = mail($to, $subject, $body, implode("\r\n", $headers), '-f' . $this->from);
             if (!$sent) {

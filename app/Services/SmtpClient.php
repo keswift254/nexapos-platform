@@ -32,7 +32,12 @@ final class SmtpClient
     ) {
     }
 
-    public function send(string $fromAddress, string $fromName, string $to, string $subject, string $body): bool
+    /**
+     * @param array<string,string> $extraHeaders threading headers only - 'Message-ID',
+     *     'In-Reply-To' and 'References'. A 'Message-ID' here replaces the generated one, which
+     *     is how a notification can be the root of a thread that later ones refer to.
+     */
+    public function send(string $fromAddress, string $fromName, string $to, string $subject, string $body, array $extraHeaders = []): bool
     {
         $this->lastError = null;
         try {
@@ -54,7 +59,7 @@ final class SmtpClient
             $this->command('DATA', [354]);
             // The body is base64, so it never contains a line that starts with "." and
             // needs no dot-stuffing.
-            $this->write($this->message($fromAddress, $fromName, $to, $subject, $body) . "\r\n.\r\n");
+            $this->write($this->message($fromAddress, $fromName, $to, $subject, $body, $extraHeaders) . "\r\n.\r\n");
             $this->expect([250]);
             try {
                 $this->command('QUIT', [221]);
@@ -133,28 +138,48 @@ final class SmtpClient
         throw new \RuntimeException('The mail server offers no sign-in method this app supports.');
     }
 
-    private function message(string $fromAddress, string $fromName, string $to, string $subject, string $body): string
+    private function message(string $fromAddress, string $fromName, string $to, string $subject, string $body, array $extraHeaders = []): string
     {
         $domain = substr(strrchr($fromAddress, '@') ?: '@localhost', 1);
+        $messageId = $extraHeaders['Message-ID'] ?? ('<' . bin2hex(random_bytes(12)) . '@' . $domain . '>');
         $headers = [
             'Date: ' . date('r'),
             'From: ' . self::encodeHeader($fromName) . ' <' . $fromAddress . '>',
             'To: <' . $to . '>',
             'Reply-To: ' . $fromAddress,
             'Subject: ' . self::encodeHeader($subject),
-            'Message-ID: <' . bin2hex(random_bytes(12)) . '@' . $domain . '>',
+            'Message-ID: ' . $messageId,
+        ];
+        foreach (['In-Reply-To', 'References'] as $name) {
+            if (isset($extraHeaders[$name]) && $extraHeaders[$name] !== '') {
+                $headers[] = $name . ': ' . $extraHeaders[$name];
+            }
+        }
+        array_push(
+            $headers,
             'MIME-Version: 1.0',
             'Content-Type: text/plain; charset=UTF-8',
             'Content-Transfer-Encoding: base64',
             'X-Auto-Response-Suppress: All',
-        ];
+        );
         return implode("\r\n", $headers) . "\r\n\r\n" . rtrim(chunk_split(base64_encode($body), 76, "\r\n"));
     }
 
+    /**
+     * Plain ASCII goes through as is. Anything else becomes RFC 2047 encoded words, each short
+     * enough (75 characters) and split between characters, so a long subject with accents or
+     * emoji is not one oversized word some mail servers refuse.
+     */
     private static function encodeHeader(string $text): string
     {
         $text = str_replace(["\r", "\n"], ' ', $text);
-        return preg_match('/^[\x20-\x7E]*$/', $text) ? $text : '=?UTF-8?B?' . base64_encode($text) . '?=';
+        if (preg_match('/^[\x20-\x7E]*$/', $text)) {
+            return $text;
+        }
+        if (function_exists('mb_encode_mimeheader')) {
+            return mb_encode_mimeheader($text, 'UTF-8', 'B', "\r\n", 9);
+        }
+        return '=?UTF-8?B?' . base64_encode($text) . '?=';
     }
 
     /**

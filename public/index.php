@@ -23,6 +23,7 @@ use Platform\Services\IntaSendReconciler;
 use Platform\Services\MaintenanceService;
 use Platform\Services\SyncSnapshot;
 use Platform\Services\SupportMailer;
+use Platform\Services\SupportNotifier;
 use Platform\Services\SupportAttachments;
 
 /**
@@ -124,6 +125,112 @@ function normalizeSupportMessage(array $message): array
 {
     $message['id'] = (int) $message['id'];
     return $message;
+}
+
+/**
+ * The reactions a side may leave on a message (iMessage-style tapbacks), keyed by the emoji
+ * without its variation selector so a client may send either form.
+ */
+const SUPPORT_REACTIONS = [
+    "\u{2764}" => "\u{2764}\u{FE0F}", // red heart
+    "\u{1F44D}" => "\u{1F44D}",       // thumbs up
+    "\u{1F44E}" => "\u{1F44E}",       // thumbs down
+    "\u{1F602}" => "\u{1F602}",       // laughing
+    "\u{203C}" => "\u{203C}\u{FE0F}", // double exclamation
+    "\u{2753}" => "\u{2753}",         // question mark
+];
+
+/** The stored form of a reaction, null for "take my reaction off"; 422 for anything else. */
+function supportCanonicalReaction($emoji): ?string
+{
+    $text = trim((string) $emoji);
+    if ($text === '') {
+        return null;
+    }
+    $key = str_replace("\u{FE0F}", '', $text);
+    if (!isset(SUPPORT_REACTIONS[$key])) {
+        jsonResponse(['success' => false, 'message' => 'That reaction is not available.'], 422);
+    }
+    return SUPPORT_REACTIONS[$key];
+}
+
+/**
+ * A ticket's messages, oldest first, each with the message it quotes (reply_to) and the
+ * reactions on it. For the vendor's dashboard it also says which device wrote a customer's message.
+ */
+function supportThreadMessages(PDO $pdo, int $ticketId, bool $forAdmin): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT m.id, m.sender, m.body, m.reply_to_id, m.created_at'
+        . ($forAdmin ? ', c.device_id, c.device_label' : '')
+        . ' FROM support_messages m '
+        . ($forAdmin ? 'LEFT JOIN clients c ON c.id = m.client_id ' : '')
+        . 'WHERE m.ticket_id = ? ORDER BY m.id ASC LIMIT 500'
+    );
+    $stmt->execute([$ticketId]);
+    $messages = array_map('normalizeSupportMessage', $stmt->fetchAll(PDO::FETCH_ASSOC));
+
+    $reactions = [];
+    $found = $pdo->prepare(
+        'SELECT r.message_id, r.sender, r.emoji FROM support_reactions r
+         JOIN support_messages m ON m.id = r.message_id
+         WHERE m.ticket_id = ? ORDER BY r.created_at, r.sender'
+    );
+    $found->execute([$ticketId]);
+    foreach ($found->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $reactions[(int) $row['message_id']][] = ['sender' => $row['sender'], 'emoji' => $row['emoji']];
+    }
+
+    $byId = [];
+    foreach ($messages as $message) {
+        $byId[$message['id']] = $message;
+    }
+    foreach ($messages as &$message) {
+        $quoted = $message['reply_to_id'] !== null ? ($byId[(int) $message['reply_to_id']] ?? null) : null;
+        $message['reply_to_id'] = $quoted === null ? null : $quoted['id'];
+        $text = trim((string) preg_replace('/\s+/u', ' ', (string) ($quoted['body'] ?? '')));
+        $message['reply_to'] = $quoted === null ? null : [
+            'id' => $quoted['id'],
+            'sender' => $quoted['sender'],
+            'snippet' => mb_substr($text, 0, 120),
+        ];
+        $message['reactions'] = $reactions[$message['id']] ?? [];
+    }
+    unset($message);
+    return SupportAttachments::withMetadata($pdo, $ticketId, $messages);
+}
+
+/** The id of the message a new message quotes, if it is one of this ticket's; 422 if not. */
+function supportReplyTarget(PDO $pdo, int $ticketId, $raw): ?int
+{
+    $id = (int) $raw;
+    if ($id <= 0) {
+        return null;
+    }
+    $stmt = $pdo->prepare('SELECT id FROM support_messages WHERE id = ? AND ticket_id = ?');
+    $stmt->execute([$id, $ticketId]);
+    if ($stmt->fetchColumn() === false) {
+        jsonResponse(['success' => false, 'message' => 'The message you are replying to is not in this conversation.'], 422);
+    }
+    return $id;
+}
+
+/** Sets (or, with null, removes) one side's reaction to one message of a ticket. */
+function supportSetReaction(PDO $pdo, int $ticketId, int $messageId, string $sender, ?string $emoji): void
+{
+    $stmt = $pdo->prepare('SELECT id FROM support_messages WHERE id = ? AND ticket_id = ?');
+    $stmt->execute([$messageId, $ticketId]);
+    if ($stmt->fetchColumn() === false) {
+        jsonResponse(['success' => false, 'message' => 'Message not found.'], 404);
+    }
+    if ($emoji === null) {
+        $pdo->prepare('DELETE FROM support_reactions WHERE message_id = ? AND sender = ?')->execute([$messageId, $sender]);
+        return;
+    }
+    $pdo->prepare(
+        'INSERT INTO support_reactions (message_id, sender, emoji) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE emoji = VALUES(emoji), created_at = CURRENT_TIMESTAMP'
+    )->execute([$messageId, $sender, $emoji]);
 }
 
 /**
@@ -365,16 +472,17 @@ if ($action === 'support_open' && $method === 'POST') {
         if ($e instanceof InvalidArgumentException) jsonResponse(['success' => false, 'message' => $e->getMessage()], 422);
         throw $e;
     }
-    $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
-    if ($from !== '') {
-        $mailer = SupportMailer::fromConfig($platformConfig);
-        if ($email !== '') {
-            $mailer->send($email, "NexaPOS ticket #$ticketId received",
-                "We received your support ticket #$ticketId: $subject\n\n$message\n\nOpen NexaPOS > Support to view the conversation.");
-        }
-        $mailer->send($from, "New NexaPOS ticket #$ticketId",
-            "A shop opened ticket #$ticketId: $subject\n\n$message\n\nReply from the NexaPOS admin dashboard.");
-    }
+    SupportNotifier::fromConfig($platformConfig)->ticketOpened([
+        'ticketId' => $ticketId,
+        'subject' => $subject,
+        'shopName' => (string) ($client['business_name'] ?? ''),
+        'shopId' => (int) $client['shop_id'],
+        'deviceId' => (string) ($client['device_id'] ?? ''),
+        'deviceLabel' => (string) ($client['device_label'] ?? ''),
+        'customerEmail' => $email !== '' ? $email : null,
+        'message' => $message,
+        'photoCount' => count($images),
+    ]);
     jsonResponse(['success' => true, 'ticket_id' => $ticketId], 201);
 }
 
@@ -385,15 +493,10 @@ if ($action === 'support_thread' && $method === 'GET') {
     if ($ticket === null) {
         jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
     }
-    $messages = $pdo->prepare(
-        'SELECT id, sender, body, created_at FROM support_messages
-         WHERE ticket_id = ? ORDER BY id ASC LIMIT 500'
-    );
-    $messages->execute([$ticketId]);
     jsonResponse([
         'success' => true,
         'ticket' => $ticket,
-        'messages' => SupportAttachments::withMetadata($pdo, $ticketId, array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC))),
+        'messages' => supportThreadMessages($pdo, $ticketId, false),
     ]);
 }
 
@@ -410,21 +513,43 @@ if ($action === 'support_reply' && $method === 'POST') {
     if (($message === '' && !$images) || mb_strlen($message) > 8000) {
         jsonResponse(['success' => false, 'message' => 'Message must be between 1 and 8000 characters.'], 422);
     }
-    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images, $client) {
+    $replyTo = supportReplyTarget($pdo, $ticketId, $body['reply_to_id'] ?? null);
+    $messageId = 0;
+    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images, $client, $replyTo, &$messageId) {
     $stmt = $pdo->prepare(
-        "INSERT INTO support_messages (ticket_id, client_id, sender, body)
-         VALUES (?, ?, 'customer', ?)"
+        "INSERT INTO support_messages (ticket_id, client_id, sender, body, reply_to_id)
+         VALUES (?, ?, 'customer', ?, ?)"
     );
-    $stmt->execute([$ticketId, (int) $client['id'], $message]);
-    SupportAttachments::save($pdo, $ticketId, (int) $pdo->lastInsertId(), $images);
+    $stmt->execute([$ticketId, (int) $client['id'], $message, $replyTo]);
+    $messageId = (int) $pdo->lastInsertId();
+    SupportAttachments::save($pdo, $ticketId, $messageId, $images);
     $pdo->prepare("UPDATE support_tickets SET status = 'open', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
     });
-    $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
-    if ($from !== '') {
-        (SupportMailer::fromConfig($platformConfig))->send($from, "Reply on NexaPOS ticket #$ticketId",
-            "The shop replied to ticket #$ticketId: {$ticket['subject']}\n\n$message\n\nOpen the NexaPOS admin dashboard to respond.");
+    SupportNotifier::fromConfig($platformConfig)->customerReplied([
+        'ticketId' => $ticketId,
+        'subject' => (string) $ticket['subject'],
+        'shopName' => (string) ($client['business_name'] ?? ''),
+        'shopId' => (int) $client['shop_id'],
+        'deviceId' => (string) ($client['device_id'] ?? ''),
+        'deviceLabel' => (string) ($client['device_label'] ?? ''),
+        'customerEmail' => ($ticket['customer_email'] ?? '') !== '' ? (string) $ticket['customer_email'] : null,
+        'message' => $message,
+        'photoCount' => count($images),
+    ], $messageId);
+    jsonResponse(['success' => true, 'message_id' => $messageId]);
+}
+
+// A reaction on a message of the shop's own ticket: ?action=support_react with
+// {ticket_id, message_id, emoji} - an empty or missing emoji takes the shop's reaction off.
+if ($action === 'support_react' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $ticketId = (int) ($body['ticket_id'] ?? 0);
+    if (supportTicketForShop($pdo, $ticketId, (int) $client['shop_id']) === null) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
     }
+    supportSetReaction($pdo, $ticketId, (int) ($body['message_id'] ?? 0), 'customer', supportCanonicalReaction($body['emoji'] ?? null));
     jsonResponse(['success' => true]);
 }
 
@@ -465,8 +590,10 @@ if ($action === 'admin_support_thread' && $method === 'GET') {
     $stmt = $pdo->prepare(
         'SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
                 support_tickets.subject, support_tickets.customer_email, support_tickets.status,
-                support_tickets.created_at, support_tickets.updated_at
+                support_tickets.created_at, support_tickets.updated_at,
+                opener.device_id AS opened_by_device_id, opener.device_label AS opened_by_device_label
          FROM support_tickets JOIN shops ON shops.id = support_tickets.shop_id
+         LEFT JOIN clients opener ON opener.id = support_tickets.opened_by_client_id
          WHERE support_tickets.id = ?'
     );
     $stmt->execute([$ticketId]);
@@ -474,15 +601,10 @@ if ($action === 'admin_support_thread' && $method === 'GET') {
     if ($ticket === false) {
         jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
     }
-    $messages = $pdo->prepare(
-        'SELECT id, sender, body, created_at FROM support_messages
-         WHERE ticket_id = ? ORDER BY id ASC LIMIT 500'
-    );
-    $messages->execute([$ticketId]);
     jsonResponse([
         'success' => true,
         'ticket' => normalizeSupportTicket($ticket),
-        'messages' => SupportAttachments::withMetadata($pdo, $ticketId, array_map('normalizeSupportMessage', $messages->fetchAll(PDO::FETCH_ASSOC))),
+        'messages' => supportThreadMessages($pdo, $ticketId, true),
     ]);
 }
 
@@ -500,7 +622,10 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $ticketId = (int) ($body['ticket_id'] ?? 0);
     $message = trim((string) ($body['message'] ?? ''));
     $images = supportImages($body);
-    $exists = $pdo->prepare('SELECT subject, customer_email FROM support_tickets WHERE id = ?');
+    $exists = $pdo->prepare(
+        'SELECT support_tickets.subject, support_tickets.customer_email, support_tickets.shop_id, shops.business_name
+         FROM support_tickets JOIN shops ON shops.id = support_tickets.shop_id WHERE support_tickets.id = ?'
+    );
     $exists->execute([$ticketId]);
     $recipient = $exists->fetch(PDO::FETCH_ASSOC);
     if ($recipient === false) {
@@ -509,22 +634,44 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     if (($message === '' && !$images) || mb_strlen($message) > 8000) {
         jsonResponse(['success' => false, 'message' => 'Message must be between 1 and 8000 characters.'], 422);
     }
-    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images) {
+    $replyTo = supportReplyTarget($pdo, $ticketId, $body['reply_to_id'] ?? null);
+    $messageId = 0;
+    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images, $replyTo, &$messageId) {
     $stmt = $pdo->prepare(
-        "INSERT INTO support_messages (ticket_id, client_id, sender, body)
-         VALUES (?, NULL, 'support', ?)"
+        "INSERT INTO support_messages (ticket_id, client_id, sender, body, reply_to_id)
+         VALUES (?, NULL, 'support', ?, ?)"
     );
-    $stmt->execute([$ticketId, $message]);
-    SupportAttachments::save($pdo, $ticketId, (int) $pdo->lastInsertId(), $images);
+    $stmt->execute([$ticketId, $message, $replyTo]);
+    $messageId = (int) $pdo->lastInsertId();
+    SupportAttachments::save($pdo, $ticketId, $messageId, $images);
     $pdo->prepare("UPDATE support_tickets SET status = 'pending', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
     });
-    $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
-    $email = (string) ($recipient['customer_email'] ?? '');
-    if ($from !== '' && $email !== '') {
-        (SupportMailer::fromConfig($platformConfig))->send($email, "NexaPOS replied to ticket #$ticketId",
-            "NexaPOS Support replied to ticket #$ticketId: {$recipient['subject']}\n\n$message\n\nOpen NexaPOS > Support to view or reply. Replying to a closed ticket reopens it.");
+    SupportNotifier::fromConfig($platformConfig)->supportReplied([
+        'ticketId' => $ticketId,
+        'subject' => (string) $recipient['subject'],
+        'shopName' => (string) ($recipient['business_name'] ?? ''),
+        'shopId' => (int) $recipient['shop_id'],
+        'deviceId' => '',
+        'deviceLabel' => '',
+        'customerEmail' => ($recipient['customer_email'] ?? '') !== '' ? (string) $recipient['customer_email'] : null,
+        'message' => $message,
+        'photoCount' => count($images),
+    ], $messageId);
+    jsonResponse(['success' => true, 'message_id' => $messageId]);
+}
+
+// The vendor's reaction to a message (see support_react).
+if ($action === 'admin_support_react' && $method === 'POST') {
+    requireAdmin($platformConfig);
+    $body = requestBody();
+    $ticketId = (int) ($body['ticket_id'] ?? 0);
+    $exists = $pdo->prepare('SELECT id FROM support_tickets WHERE id = ?');
+    $exists->execute([$ticketId]);
+    if ($exists->fetchColumn() === false) {
+        jsonResponse(['success' => false, 'message' => 'Support ticket not found.'], 404);
     }
+    supportSetReaction($pdo, $ticketId, (int) ($body['message_id'] ?? 0), 'support', supportCanonicalReaction($body['emoji'] ?? null));
     jsonResponse(['success' => true]);
 }
 

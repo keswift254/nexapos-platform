@@ -29,6 +29,17 @@ $config = [
     // Set in the private platform.local.php after creating the mailbox in
     // DirectAdmin. An empty address keeps ticket email disabled.
     'support_email_from' => getenv('PLATFORM_SUPPORT_EMAIL_FROM') ?: '',
+    // Authenticated SMTP for ticket emails. The hosting account is not allowed to use the
+    // server's local sendmail (PHP mail() fails), so production sends through a real
+    // mailbox: put host/user/pass in the private config/support.local.php. Left empty,
+    // the old mail() path is used (local development and tests).
+    'support_smtp' => [
+        'host' => getenv('PLATFORM_SUPPORT_SMTP_HOST') ?: '',
+        'port' => (int) (getenv('PLATFORM_SUPPORT_SMTP_PORT') ?: 0),
+        'secure' => getenv('PLATFORM_SUPPORT_SMTP_SECURE') ?: 'tls',
+        'user' => getenv('PLATFORM_SUPPORT_SMTP_USER') ?: '',
+        'pass' => getenv('PLATFORM_SUPPORT_SMTP_PASS') ?: '',
+    ],
     // Browser-hosted admin dashboard origins. Flutter/curl requests do
     // not send Origin and are unaffected by CORS.
     'cors_allowed_origins' => array_values(array_filter(array_map(
@@ -61,6 +72,11 @@ $supportConfig = __DIR__ . '/support.local.php';
 if (getenv('NEXAPOS_IGNORE_LOCAL_CONFIG') !== '1' && is_file($supportConfig)) {
     $support = require $supportConfig;
     $config['support_email_from'] = (string) ($support['support_email_from'] ?? $config['support_email_from']);
+    foreach (['host', 'port', 'secure', 'user', 'pass', 'verify_peer', 'timeout'] as $key) {
+        if (array_key_exists('smtp_' . $key, $support)) {
+            $config['support_smtp'][$key] = $support['smtp_' . $key];
+        }
+    }
 }
 
 return $config;

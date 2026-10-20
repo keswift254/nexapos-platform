@@ -367,7 +367,7 @@ if ($action === 'support_open' && $method === 'POST') {
     }
     $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
     if ($from !== '') {
-        $mailer = new SupportMailer($from);
+        $mailer = SupportMailer::fromConfig($platformConfig);
         if ($email !== '') {
             $mailer->send($email, "NexaPOS ticket #$ticketId received",
                 "We received your support ticket #$ticketId: $subject\n\n$message\n\nOpen NexaPOS > Support to view the conversation.");
@@ -422,7 +422,7 @@ if ($action === 'support_reply' && $method === 'POST') {
     });
     $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
     if ($from !== '') {
-        (new SupportMailer($from))->send($from, "Reply on NexaPOS ticket #$ticketId",
+        (SupportMailer::fromConfig($platformConfig))->send($from, "Reply on NexaPOS ticket #$ticketId",
             "The shop replied to ticket #$ticketId: {$ticket['subject']}\n\n$message\n\nOpen the NexaPOS admin dashboard to respond.");
     }
     jsonResponse(['success' => true]);
@@ -522,7 +522,7 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $from = trim((string) ($platformConfig['support_email_from'] ?? ''));
     $email = (string) ($recipient['customer_email'] ?? '');
     if ($from !== '' && $email !== '') {
-        (new SupportMailer($from))->send($email, "NexaPOS replied to ticket #$ticketId",
+        (SupportMailer::fromConfig($platformConfig))->send($email, "NexaPOS replied to ticket #$ticketId",
             "NexaPOS Support replied to ticket #$ticketId: {$recipient['subject']}\n\n$message\n\nOpen NexaPOS > Support to view or reply. Replying to a closed ticket reopens it.");
     }
     jsonResponse(['success' => true]);

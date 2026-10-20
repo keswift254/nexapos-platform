@@ -35,7 +35,7 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.2"
-          extensions: curl, pdo_mysql
+          extensions: curl, pdo_mysql, openssl, mbstring
           coverage: none
       - name: Lint PHP
         run: find . -name '*.php' -print0 | xargs -0 -n1 php -l
@@ -55,6 +55,8 @@ jobs:
           exit 1
       - name: Run integration tests
         run: php tests/integration/run.php
+      - name: Verify the support email sender (SMTP)
+        run: php tests/verify_smtp_client.php
       - name: Verify initial sync snapshots
         run: php tests/integration/sync_snapshot.php
       - name: Show server logs on failure

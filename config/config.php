@@ -13,6 +13,8 @@ $config = [
         // image, see Dockerfile) to enable it. Left unset for local
         // XAMPP, which keeps connecting in plaintext same as always.
         'ssl_ca' => getenv('DB_SSL_CA') ?: null,
+        // Optional SQL run when each connection opens, e.g. "SET time_zone = '+00:00', sql_mode = '...'".
+        'init_command' => getenv('DB_INIT_COMMAND') ?: null,
     ],
 ];
 

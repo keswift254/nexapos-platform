@@ -320,6 +320,23 @@ $slightlyAhead = gmdate('Y-m-d\TH:i:s', time() + 3 * 3600) . '.000000Z';
 $driftPush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('clock-drift', $slightlyAhead)]], ['Authorization: Bearer ' . $ownerKey]);
 check($driftPush['status'] === 200, 'Ordinary clock drift (3 hours ahead) must still sync: ' . $driftPush['raw']);
 
+// Planned maintenance (moving the database): while config/maintenance.flag exists every request
+// - writes included - answers 503 before the database is touched, so nothing can be recorded
+// into a database that is being copied; removing the file restores service immediately.
+$maintenanceFlag = __DIR__ . '/../../config/maintenance.flag';
+try {
+    file_put_contents($maintenanceFlag, 'test');
+    $heldPush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('maintenance-row', gmdate('Y-m-d\TH:i:s') . '.222222Z')]], ['Authorization: Bearer ' . $ownerKey]);
+    check($heldPush['status'] === 503, 'A write during maintenance was not refused with 503: ' . $heldPush['raw']);
+    check(request($baseUrl, 'health')['status'] === 503, 'The health check answered during maintenance.');
+    check((int) $pdo->query("SELECT COUNT(*) FROM sync_changes WHERE row_id = 'maintenance-row'")->fetchColumn() === 0,
+        'A change was recorded while the service was in maintenance.');
+} finally {
+    @unlink($maintenanceFlag);
+}
+$resumedPush = request($baseUrl, 'push_changes', 'POST', ['changes' => [$change('maintenance-row', gmdate('Y-m-d\TH:i:s') . '.222222Z')]], ['Authorization: Bearer ' . $ownerKey]);
+check($resumedPush['status'] === 200, 'Service did not resume after maintenance ended: ' . $resumedPush['raw']);
+
 $ownerId = (int) $pdo->query("SELECT id FROM clients WHERE device_id = 'owner-device'")->fetchColumn();
 $insertTransaction = $pdo->prepare("INSERT INTO transactions
     (client_id, reference, amount_minor, currency, subaccount_code)

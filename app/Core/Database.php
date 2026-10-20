@@ -42,6 +42,12 @@ class Database
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ];
+        // Statements run once, when the connection opens (no extra round trip): lets a new
+        // database host be made to behave exactly like the old one - session time zone and
+        // sql_mode in particular, which a shared MySQL server sets differently by default.
+        if (!empty($db['init_command'])) {
+            $options[PDO::MYSQL_ATTR_INIT_COMMAND] = (string) $db['init_command'];
+        }
         if (!empty($db['ssl_ca'])) {
             if (!is_file($db['ssl_ca']) || !is_readable($db['ssl_ca'])) {
                 throw new RuntimeException('DB_SSL_CA does not point to a readable CA certificate.');

@@ -138,6 +138,28 @@ sort($joinStatuses);
 check($joinStatuses === [200, 422], 'Exactly one concurrent invite claim must succeed.');
 $joinedKey = $joinRace[0]['status'] === 200 ? $joinA['body']['api_key'] : $joinB['body']['api_key'];
 $joinedDeviceId = $joinRace[0]['status'] === 200 ? 'join-device-a' : 'join-device-b';
+$ownerClientId = (int) $pdo->query("SELECT id FROM clients WHERE device_id = 'owner-device'")->fetchColumn();
+$joinedClientId = (int) $pdo->query("SELECT id FROM clients WHERE device_id = '" . $joinedDeviceId . "'")->fetchColumn();
+$devicesBefore = request($baseUrl, 'list_devices', 'GET', null, ['Authorization: Bearer ' . $ownerKey]);
+check($devicesBefore['status'] === 200 && count($devicesBefore['body']['devices'] ?? []) === 2,
+    'The owner must see the primary device and joined peer.');
+check(request($baseUrl, 'revoke_device', 'POST', ['client_id' => $ownerClientId], ['Authorization: Bearer ' . $ownerKey])['status'] === 422,
+    'The primary device revoked itself.');
+// The SQL guard must protect any owner-marked target, not just the caller's id.
+$pdo->prepare('UPDATE clients SET is_owner = 1 WHERE id = ?')->execute([$joinedClientId]);
+$ownerTarget = request($baseUrl, 'revoke_device', 'POST', ['client_id' => $joinedClientId], ['Authorization: Bearer ' . $ownerKey]);
+check($ownerTarget['status'] === 422 && $pdo->query("SELECT status FROM clients WHERE id = $joinedClientId")->fetchColumn() === 'active',
+    'A second owner-marked device was revoked: ' . $ownerTarget['raw']);
+$pdo->prepare('UPDATE clients SET is_owner = 0 WHERE id = ?')->execute([$joinedClientId]);
+check(request($baseUrl, 'revoke_device', 'POST', ['client_id' => $joinedClientId], ['Authorization: Bearer ' . $ownerKey])['status'] === 200,
+    'Could not revoke a joined device.');
+$devicesAfter = request($baseUrl, 'list_devices', 'GET', null, ['Authorization: Bearer ' . $ownerKey]);
+check($devicesAfter['status'] === 200 && count($devicesAfter['body']['devices'] ?? []) === 1
+    && (int) $devicesAfter['body']['devices'][0]['id'] === $ownerClientId,
+    'A revoked device remained in the owner device list.');
+check($pdo->query("SELECT status FROM clients WHERE id = $joinedClientId")->fetchColumn() === 'disabled',
+    'Hiding a revoked device deleted or re-enabled its audit record.');
+$pdo->prepare("UPDATE clients SET status = 'active' WHERE id = ?")->execute([$joinedClientId]);
 $peerInvite = request($baseUrl, 'generate_invite', 'POST', [], ['Authorization: Bearer ' . $joinedKey]);
 check($peerInvite['status'] === 403, 'A joined device must not invite other devices.');
 $membership = request($baseUrl, 'client_status', 'GET', null, ['Authorization: Bearer ' . $joinedKey]);

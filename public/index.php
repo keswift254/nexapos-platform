@@ -1206,7 +1206,9 @@ if ($action === 'list_devices' && $method === 'GET') {
     if (!$client['is_owner']) {
         jsonResponse(['success' => false, 'message' => 'Only the device that originally set up this shop can manage devices.'], 403);
     }
-    $stmt = $pdo->prepare('SELECT id, device_label, is_owner, status, created_at, last_seen_at FROM clients WHERE shop_id = ? ORDER BY id');
+    // Disabled clients remain in the database for audit/foreign-key history,
+    // but are no longer members the owner can act on in this screen.
+    $stmt = $pdo->prepare("SELECT id, device_label, is_owner, status, created_at, last_seen_at FROM clients WHERE shop_id = ? AND status != 'disabled' ORDER BY id");
     $stmt->execute([$client['shop_id']]);
     jsonResponse(['success' => true, 'devices' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
 }
@@ -1232,7 +1234,14 @@ if ($action === 'revoke_device' && $method === 'POST') {
     if ($targetId === (int) $client['id']) {
         jsonResponse(['success' => false, 'message' => 'You cannot revoke the device you are currently using.'], 422);
     }
-    $update = $pdo->prepare("UPDATE clients SET status = 'disabled' WHERE id = ? AND shop_id = ? AND status != 'disabled'");
+    // The founding/primary device is never revokable through shop device
+    // management, even if a buggy or malicious client sends its id directly.
+    $target = $pdo->prepare('SELECT is_owner FROM clients WHERE id = ? AND shop_id = ?');
+    $target->execute([$targetId, $client['shop_id']]);
+    if ((int) $target->fetchColumn() === 1) {
+        jsonResponse(['success' => false, 'message' => 'The primary device cannot be revoked.'], 422);
+    }
+    $update = $pdo->prepare("UPDATE clients SET status = 'disabled' WHERE id = ? AND shop_id = ? AND is_owner = 0 AND status != 'disabled'");
     $update->execute([$targetId, $client['shop_id']]);
     if ($update->rowCount() !== 1) {
         jsonResponse(['success' => false, 'message' => 'Device not found, or already disabled.'], 404);

@@ -200,7 +200,7 @@ check(($byId[$replyId]['reply_to_id'] ?? null) === $firstMessageId && ($byId[$re
     && ($byId[$replyId]['reply_to']['sender'] ?? '') === 'customer', 'a reply carries the message it quotes');
 check(array_key_exists('reply_to', $byId[$firstMessageId]) && $byId[$firstMessageId]['reply_to'] === null && $byId[$firstMessageId]['reply_to_id'] === null
     && ($byId[$firstMessageId]['reactions'] ?? 'x') === [], 'a plain message quotes nothing and has no reactions');
-$otherTicket = (int) call($baseUrl, 'support_open', 'POST', ['subject' => 'Another one', 'message' => 'hello'], $auth($otherKey))['body']['ticket_id'];
+$otherTicket = (int) call($baseUrl, 'support_open', 'POST', ['subject' => 'Another one', 'message' => 'hello', 'email' => 'other@example.com'], $auth($otherKey))['body']['ticket_id'];
 check(call($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'x', 'reply_to_id' => 999999999], $auth($key))['status'] === 422,
     'quoting a message that is not in this ticket is refused');
 $otherMessage = (int) call($baseUrl, 'support_thread', 'GET', null, $auth($otherKey), ['ticket_id' => $otherTicket])['body']['messages'][0]['id'];

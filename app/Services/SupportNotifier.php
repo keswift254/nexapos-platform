@@ -11,8 +11,10 @@ namespace Platform\Services;
  *  - internal: to the support mailbox, for whoever answers tickets. Subject
  *    "[#12] Shop name - ticket subject" never changes, the first mail's Message-ID is the
  *    thread root, and every later mail points at it (In-Reply-To / References). Each one
- *    says which shop and which device (its ID) wrote.
- *  - customer: to the address the shop gave, "NexaPOS support ticket #12: subject".
+ *    says which shop and which device (its ID) wrote - or, for a chat started on the website,
+ *    which visitor.
+ *  - customer: to the address the shop (or website visitor) gave, "NexaPOS support ticket
+ *    #12: subject". Every reply support writes is copied there.
  *
  * Sending never throws and never blocks the API call that caused it.
  */
@@ -31,8 +33,10 @@ final class SupportNotifier
 
     /**
      * What the notifications need to know. Every value may be hostile (a shop typed it).
+     * channel is 'website' for a chat started on the public site (then visitorName says who, and
+     * shopName/shopId/deviceId mean nothing); anything else is an app ticket.
      *
-     * @param array{ticketId:int,subject:string,shopName:string,shopId:int,deviceId:string,deviceLabel:string,customerEmail:?string,message:string,photoCount:int} $ticket
+     * @param array{ticketId:int,subject:string,shopName:string,shopId:int,deviceId:string,deviceLabel:string,customerEmail:?string,message:string,photoCount:int,channel?:string,visitorName?:string} $ticket
      */
     public function ticketOpened(array $ticket): void
     {
@@ -50,9 +54,14 @@ final class SupportNotifier
             $this->mailer->send(
                 $email,
                 self::customerSubject($ticket),
-                "We received your support ticket #{$ticket['ticketId']}: " . self::line($ticket['subject'])
-                    . "\n\n" . $ticket['message']
-                    . "\n\nOpen NexaPOS > Support to view the conversation.",
+                self::isWebsite($ticket)
+                    ? "Thanks for contacting NexaPOS support - this is ticket #{$ticket['ticketId']}."
+                        . "\n\nYour message:\n\n" . $ticket['message']
+                        . "\n\nWe answer in the chat on nexapos.cc and email you a copy of every reply here. "
+                        . 'You can also just reply to this email.'
+                    : "We received your support ticket #{$ticket['ticketId']}: " . self::line($ticket['subject'])
+                        . "\n\n" . $ticket['message']
+                        . "\n\nOpen NexaPOS > Support to view the conversation.",
                 ['Message-ID' => $this->customerRoot($ticket['ticketId'])],
             );
         }
@@ -85,12 +94,21 @@ final class SupportNotifier
             return;
         }
         $root = $this->customerRoot($ticket['ticketId']);
+        $text = trim($ticket['message']);
+        $count = (int) $ticket['photoCount'];
+        $photos = $count > 0
+            ? "\n\n($count photo" . ($count === 1 ? '' : 's') . ' attached - open '
+                . (self::isWebsite($ticket) ? 'the chat on nexapos.cc' : 'NexaPOS > Support') . ' to see '
+                . ($count === 1 ? 'it' : 'them') . '.)'
+            : '';
         $this->mailer->send(
             $email,
             self::customerSubject($ticket),
             "NexaPOS Support replied to ticket #{$ticket['ticketId']}: " . self::line($ticket['subject'])
-                . "\n\n" . $ticket['message']
-                . "\n\nOpen NexaPOS > Support to view or reply. Replying to a closed ticket reopens it.",
+                . "\n\n" . ($text !== '' ? $text : '(photo only)') . $photos
+                . (self::isWebsite($ticket)
+                    ? "\n\nContinue the chat at https://nexapos.cc or just reply to this email."
+                    : "\n\nOpen NexaPOS > Support to view or reply. Replying to a closed ticket reopens it."),
             [
                 'Message-ID' => $this->id("ticket-{$ticket['ticketId']}-customer-m$messageId"),
                 'In-Reply-To' => $root,
@@ -101,8 +119,19 @@ final class SupportNotifier
 
     public static function internalSubject(array $ticket): string
     {
+        if (self::isWebsite($ticket)) {
+            $name = self::line($ticket['visitorName'] ?? '');
+            $who = 'Website visitor' . ($name !== '' ? " ($name)" : '');
+            return mb_substr("[#{$ticket['ticketId']}] $who - " . self::line($ticket['subject']), 0, 180);
+        }
         $shop = self::line($ticket['shopName']) ?: ('Shop #' . $ticket['shopId']);
         return mb_substr("[#{$ticket['ticketId']}] $shop - " . self::line($ticket['subject']), 0, 180);
+    }
+
+    /** True for a chat started on the public website rather than from a shop's app. */
+    public static function isWebsite(array $ticket): bool
+    {
+        return ($ticket['channel'] ?? 'app') === 'website';
     }
 
     public static function customerSubject(array $ticket): string
@@ -118,16 +147,28 @@ final class SupportNotifier
 
     private function internalBody(string $headline, array $ticket): string
     {
-        $shop = self::line($ticket['shopName']) ?: 'unnamed shop';
-        $label = self::line($ticket['deviceLabel']);
-        $lines = [
-            $headline,
-            '',
-            "Shop:    $shop (shop #{$ticket['shopId']})",
-            'Device:  ' . ($label !== '' ? "$label - " : '') . 'ID ' . (self::line($ticket['deviceId']) ?: 'unknown'),
-            "Ticket:  #{$ticket['ticketId']} - " . self::line($ticket['subject']),
-            'Contact: ' . (($ticket['customerEmail'] ?? '') !== '' ? $ticket['customerEmail'] : 'no email given'),
-        ];
+        $contact = 'Contact: ' . (($ticket['customerEmail'] ?? '') !== '' ? $ticket['customerEmail'] : 'no email given');
+        if (self::isWebsite($ticket)) {
+            $name = self::line($ticket['visitorName'] ?? '');
+            $lines = [
+                $headline,
+                '',
+                'From:    Website visitor' . ($name !== '' ? " - $name" : ''),
+                "Ticket:  #{$ticket['ticketId']} - " . self::line($ticket['subject']),
+                $contact,
+            ];
+        } else {
+            $shop = self::line($ticket['shopName']) ?: 'unnamed shop';
+            $label = self::line($ticket['deviceLabel']);
+            $lines = [
+                $headline,
+                '',
+                "Shop:    $shop (shop #{$ticket['shopId']})",
+                'Device:  ' . ($label !== '' ? "$label - " : '') . 'ID ' . (self::line($ticket['deviceId']) ?: 'unknown'),
+                "Ticket:  #{$ticket['ticketId']} - " . self::line($ticket['subject']),
+                $contact,
+            ];
+        }
         if ($ticket['photoCount'] > 0) {
             $lines[] = 'Photos:  ' . $ticket['photoCount'] . ' attached (open the dashboard to see them)';
         }

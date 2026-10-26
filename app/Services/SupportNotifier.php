@@ -56,7 +56,7 @@ final class SupportNotifier
                 self::customerSubject($ticket),
                 self::isWebsite($ticket)
                     ? "Thanks for contacting NexaPOS support - this is ticket #{$ticket['ticketId']}."
-                        . "\n\nYour message:\n\n" . $ticket['message']
+                        . "\n\nYour message:\n\n" . (trim($ticket['message']) !== '' ? $ticket['message'] : '(photo only)')
                         . "\n\nWe answer in the chat on nexapos.cc and email you a copy of every reply here. "
                         . 'You can also just reply to this email.'
                     : "We received your support ticket #{$ticket['ticketId']}: " . self::line($ticket['subject'])

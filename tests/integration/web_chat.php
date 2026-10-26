@@ -78,6 +78,8 @@ spl_autoload_register(static function (string $class): void {
 });
 $pdo = Platform\Core\Database::connection();
 $pdo->exec("DELETE FROM support_tickets WHERE customer_email LIKE '%@webchat.test'");
+// chats started by hand against this database must not count towards this run's per-address limits
+$pdo->exec("UPDATE support_messages SET source_ip_hash = 'before-this-run' WHERE source_ip_hash IS NOT NULL");
 
 $admin = ['X-Admin-Secret: ' . $adminSecret];
 $auth = static fn (string $key): array => ['Authorization: Bearer ' . $key];
@@ -228,6 +230,37 @@ check(($thread($token)['body']['ticket']['status'] ?? '') === 'closed', 'a resol
 $sendMessage($token, ['message' => 'One more question']);
 check(($thread($token)['body']['ticket']['status'] ?? '') === 'open', 'writing to a resolved chat reopens it');
 
+// --- the visitor can send photos (a photo alone is a message too)
+$before = count(mails($capture));
+$photoStart = $start(['email' => "photo-$unique@webchat.test", 'message' => 'Here is my problem', 'attachments' => [['data' => $png]]]);
+check($photoStart['status'] === 201, 'a chat can start with a photo');
+$photoTicket = (int) $photoStart['body']['ticket_id'];
+$photoToken = (string) $photoStart['body']['token'];
+$photoThread = static fn () => call($baseUrl, 'web_chat_thread', 'GET', null, $tokenHeader($photoToken), ['ticket_id' => $photoTicket])['body']['messages'];
+$ownPhotoId = (int) ($photoThread()[0]['attachments'][0]['id'] ?? 0);
+check($ownPhotoId > 0, 'the visitor\'s own message lists its photo');
+$ownImage = call($baseUrl, 'web_chat_attachment', 'GET', null, $tokenHeader($photoToken), ['ticket_id' => $photoTicket, 'id' => $ownPhotoId]);
+check($ownImage['status'] === 200 && str_contains($ownImage['head'], 'image/png'), 'and can fetch it back');
+$vendorImage = call($baseUrl, 'admin_support_attachment', 'GET', null, $admin, ['id' => $ownPhotoId]);
+check($vendorImage['status'] === 200 && str_contains($vendorImage['head'], 'image/png'), 'the vendor can open it from the dashboard');
+$sent = array_slice(mails($capture), $before);
+$photoInternal = array_values(array_filter($sent, static fn (array $m) => $m['to'] === 'support@sup.test'))[0] ?? [];
+check(str_contains($photoInternal['text'] ?? '', 'Photos:  1 attached'), 'the support mail says a photo is attached');
+$photoOnly = call($baseUrl, 'web_chat_send', 'POST', ['ticket_id' => $photoTicket, 'message' => '', 'attachments' => [['data' => $png], ['data' => $png]]], $tokenHeader($photoToken));
+check($photoOnly['status'] === 200, 'a message may be photos only');
+$last = array_values(array_filter($photoThread(), static fn (array $m) => (int) $m['id'] === (int) $photoOnly['body']['message_id']))[0] ?? [];
+check(($last['body'] ?? 'x') === '' && count($last['attachments'] ?? []) === 2, 'with both photos in it');
+$photoOnlyStart = $start(['email' => "photoonly-$unique@webchat.test", 'message' => '', 'attachments' => [['data' => $png]]]);
+check($photoOnlyStart['status'] === 201 && $pdo->query('SELECT subject FROM support_tickets WHERE id = ' . (int) $photoOnlyStart['body']['ticket_id'])->fetchColumn() === 'Website chat (photo)',
+    'a chat may start with only a photo');
+$badSend = static fn (array $attachments) => call($baseUrl, 'web_chat_send', 'POST', ['ticket_id' => $photoTicket, 'message' => 'x', 'attachments' => $attachments], $tokenHeader($photoToken))['status'];
+check($badSend([['data' => base64_encode('this is not an image')]]) === 422, 'something that is not an image is refused');
+check($badSend(array_fill(0, 5, ['data' => $png])) === 422, 'more than four photos in one message are refused');
+check($badSend([['data' => str_repeat('A', 2800001)]]) === 422, 'an oversized photo is refused');
+check(call($baseUrl, 'web_chat_send', 'POST', ['ticket_id' => $photoTicket, 'message' => 'x', 'attachments' => 'oops'], $tokenHeader($photoToken))['status'] === 422, 'photos that are not a list are refused');
+check(call($baseUrl, 'web_chat_attachment', 'GET', null, $tokenHeader($token), ['ticket_id' => $photoTicket, 'id' => $ownPhotoId])['status'] === 404,
+    'another visitor\'s token cannot fetch these photos');
+check($start(['email' => "empty-$unique@webchat.test", 'message' => ' '])['status'] === 422, 'no text and no photo is still refused');
 // --- a website chat is invisible to every shop and to the app endpoints
 $registered =call($baseUrl, 'register_device', 'POST', ['device_id' => "webchat-till-$unique", 'device_label' => 'Till', 'registration_secret' => "secret-$unique"]);
 $shopKey = (string) ($registered['body']['api_key'] ?? '');
@@ -312,6 +345,19 @@ $busy = $sendMessage($token, ['message' => 'while very busy']);
 $busyStart = $start(['email' => "busy-$unique@webchat.test", 'message' => 'while very busy']);
 $pdo->exec("DELETE FROM support_messages WHERE body = 'filler'");
 check($busy['status'] === 429 && $busyStart['status'] === 429, 'an overall cap protects the inbox when chat is flooded from many addresses');
+
+// photos: 12 an hour from one address, 150 an hour overall
+$photoSend = static fn (int $n) => $sendMessage($token, ['message' => '', 'attachments' => array_fill(0, $n, ['data' => $png])])['status'];
+check($photoSend(4) === 200 && $photoSend(4) === 200 && $photoSend(4) === 200, 'twelve photos an hour from one address are fine');
+check($photoSend(1) === 429, 'the thirteenth is refused');
+$pdo->exec("UPDATE support_messages SET created_at = DATE_SUB(NOW(), INTERVAL 3 HOUR) WHERE source_ip_hash IS NOT NULL");
+$pdo->exec("INSERT INTO support_messages (ticket_id, client_id, sender, body, source_ip_hash) VALUES ($ticketId, NULL, 'support', 'filler', 'elsewhere')");
+$fillerMessage = (int) $pdo->lastInsertId();
+$pdo->exec("INSERT INTO support_attachments (ticket_id, message_id, mime_type, byte_size, image_data) SELECT $ticketId, $fillerMessage, 'image/png', 1, 'x' FROM support_messages a CROSS JOIN support_messages b LIMIT 150");
+$busyPhoto = $photoSend(1);
+$pdo->exec("DELETE FROM support_messages WHERE body = 'filler'");
+check($busyPhoto === 429, 'an overall cap on photos protects the database when many addresses upload at once');
+check($photoSend(1) === 200, 'and uploads work again once that passes');
 
 // --- the browser on nexapos.cc is allowed to send the token
 $preflight = call($baseUrl, 'web_chat_thread', 'OPTIONS', null, ['Origin: https://nexapos.cc', 'Access-Control-Request-Method: GET', 'Access-Control-Request-Headers: x-chat-token']);

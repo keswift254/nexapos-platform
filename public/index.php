@@ -302,6 +302,28 @@ function webChatSourceHash(array $platformConfig): string
     return hash_hmac('sha256', (string) ($_SERVER['REMOTE_ADDR'] ?? ''), $key);
 }
 
+/**
+ * How many photos a visitor may send: 12 an hour from one network address, 150 an hour overall.
+ * $count is how many the message carries (not yet checked as images - this runs before that work).
+ */
+function webChatPhotoLimit(PDO $pdo, string $ipHash, int $count): void
+{
+    if ($count <= 0) {
+        return;
+    }
+    $join = 'SELECT COUNT(*) FROM support_attachments a JOIN support_messages m ON m.id = a.message_id
+             WHERE m.created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)';
+    $own = $pdo->prepare($join . ' AND m.source_ip_hash = ?');
+    $own->execute([$ipHash]);
+    if ((int) $own->fetchColumn() + $count > 12) {
+        jsonResponse(['success' => false, 'message' => 'You have sent a lot of photos. Please try again in a little while.'], 429);
+    }
+    $all = $pdo->query($join . ' AND m.source_ip_hash IS NOT NULL');
+    if ((int) $all->fetchColumn() + $count > 150) {
+        jsonResponse(['success' => false, 'message' => 'Photo uploads are very busy right now. Please try again in a little while.'], 429);
+    }
+}
+
 /** One count against one limit; answers 429 itself when the limit is reached. */
 function webChatLimit(PDO $pdo, string $sql, array $params, int $limit, string $message): void
 {
@@ -715,11 +737,12 @@ if ($action === 'web_chat_start' && $method === 'POST') {
     if ($email === null) {
         jsonResponse(['success' => false, 'message' => 'Enter your email address - we send a copy of every reply there.'], 422);
     }
-    if (mb_strlen($message) < 2 || mb_strlen($message) > WEB_CHAT_MAX_MESSAGE) {
+    $photoCount = is_array($body['attachments'] ?? null) ? count($body['attachments']) : 0;
+    if (mb_strlen($message) > WEB_CHAT_MAX_MESSAGE || (mb_strlen($message) < 2 && $photoCount === 0)) {
         jsonResponse(['success' => false, 'message' => 'Write your message in 2 to ' . WEB_CHAT_MAX_MESSAGE . ' characters.'], 422);
     }
     $ipHash = webChatSourceHash($platformConfig);
-    $tooMany = 'Too many chats were started just now. Please try again in a little while, or message us on WhatsApp.';
+    $tooMany ='Too many chats were started just now. Please try again in a little while, or message us on WhatsApp.';
     webChatLimit(
         $pdo,
         "SELECT COUNT(*) FROM support_messages m
@@ -737,9 +760,11 @@ if ($action === 'web_chat_start' && $method === 'POST') {
         'SELECT COUNT(*) FROM support_messages WHERE source_ip_hash IS NOT NULL AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)',
         [], 400, 'Chat is very busy right now. Please try again in a little while, or message us on WhatsApp.'
     );
+    webChatPhotoLimit($pdo, $ipHash, $photoCount);
+    $images = supportImages($body);
 
     $line = webChatLine($message, 200);
-    $subject = mb_strlen($line) >= 3 ? (mb_strlen($line) > 60 ? rtrim(mb_substr($line, 0, 59)) . '…' : $line) : 'Website chat';
+    $subject = mb_strlen($line) >= 3 ? (mb_strlen($line) > 60 ? rtrim(mb_substr($line, 0, 59)) . '…' : $line) : ($images ? 'Website chat (photo)' : 'Website chat');
     $token = bin2hex(random_bytes(32));
     $pdo->beginTransaction();
     try {
@@ -750,9 +775,11 @@ if ($action === 'web_chat_start' && $method === 'POST') {
         $ticketId = (int) $pdo->lastInsertId();
         $pdo->prepare("INSERT INTO support_messages (ticket_id, client_id, sender, body, source_ip_hash) VALUES (?, NULL, 'customer', ?, ?)")
             ->execute([$ticketId, $message, $ipHash]);
+        SupportAttachments::save($pdo, $ticketId, (int) $pdo->lastInsertId(), $images);
         $pdo->commit();
     } catch (\Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($e instanceof InvalidArgumentException) jsonResponse(['success' => false, 'message' => $e->getMessage()], 422);
         throw $e;
     }
     SupportNotifier::fromConfig($platformConfig)->ticketOpened([
@@ -764,7 +791,7 @@ if ($action === 'web_chat_start' && $method === 'POST') {
         'deviceLabel' => '',
         'customerEmail' => $email,
         'message' => $message,
-        'photoCount' => 0,
+        'photoCount' => count($images),
         'channel' => 'website',
         'visitorName' => $name,
     ]);
@@ -794,7 +821,8 @@ if ($action === 'web_chat_send' && $method === 'POST') {
         jsonResponse(['success' => false, 'message' => 'Chat not found.'], 404);
     }
     $message = webChatText($body['message'] ?? '');
-    if ($message === '' || mb_strlen($message) > WEB_CHAT_MAX_MESSAGE) {
+    $photoCount = is_array($body['attachments'] ?? null) ? count($body['attachments']) : 0;
+    if (($message === '' && $photoCount === 0) || mb_strlen($message) > WEB_CHAT_MAX_MESSAGE) {
         jsonResponse(['success' => false, 'message' => 'Write your message in 1 to ' . WEB_CHAT_MAX_MESSAGE . ' characters.'], 422);
     }
     $ipHash = webChatSourceHash($platformConfig);
@@ -813,12 +841,15 @@ if ($action === 'web_chat_send' && $method === 'POST') {
         'SELECT COUNT(*) FROM support_messages WHERE source_ip_hash IS NOT NULL AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)',
         [], 400, 'Chat is very busy right now. Please try again in a little while, or message us on WhatsApp.'
     );
+    webChatPhotoLimit($pdo, $ipHash, $photoCount);
+    $images = supportImages($body);
     $replyTo = supportReplyTarget($pdo, $ticketId, $body['reply_to_id'] ?? null);
     $messageId = 0;
-    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $replyTo, $ipHash, &$messageId) {
+    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images, $replyTo, $ipHash, &$messageId) {
         $pdo->prepare("INSERT INTO support_messages (ticket_id, client_id, sender, body, reply_to_id, source_ip_hash) VALUES (?, NULL, 'customer', ?, ?, ?)")
             ->execute([$ticketId, $message, $replyTo, $ipHash]);
         $messageId = (int) $pdo->lastInsertId();
+        SupportAttachments::save($pdo, $ticketId, $messageId, $images);
         $pdo->prepare("UPDATE support_tickets SET status = 'open', updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$ticketId]);
     });
     SupportNotifier::fromConfig($platformConfig)->customerReplied([
@@ -830,7 +861,7 @@ if ($action === 'web_chat_send' && $method === 'POST') {
         'deviceLabel' => '',
         'customerEmail' => (string) $ticket['customer_email'],
         'message' => $message,
-        'photoCount' => 0,
+        'photoCount' => count($images),
         'channel' => 'website',
         'visitorName' => (string) ($ticket['visitor_name'] ?? ''),
     ], $messageId);

@@ -943,7 +943,7 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $pdo->prepare("UPDATE support_tickets SET status = 'pending', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
     });
-    SupportNotifier::fromConfig($platformConfig)->supportReplied([
+    $emailed = SupportNotifier::fromConfig($platformConfig)->supportReplied([
         'ticketId' => $ticketId,
         'subject' => (string) $recipient['subject'],
         'shopName' => (string) ($recipient['business_name'] ?? ''),
@@ -957,7 +957,7 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
         'channel' => (string) $recipient['channel'],
         'visitorName' => (string) ($recipient['visitor_name'] ?? ''),
     ], $messageId);
-    jsonResponse(['success' => true, 'message_id' => $messageId]);
+    jsonResponse(['success' => true, 'message_id' => $messageId, 'emailed' => $emailed]);
 }
 
 // The vendor's reaction to a message (see support_react).

@@ -86,12 +86,15 @@ final class SupportNotifier
         );
     }
 
-    /** Support answered: to the shop's email address (if it gave one), in the customer's thread. */
-    public function supportReplied(array $ticket, int $messageId): void
+    /**
+     * Support answered: a copy goes to the client's email address (if the ticket has one), in the
+     * customer's thread. True when the mail server accepted it - the dashboard tells the vendor.
+     */
+    public function supportReplied(array $ticket, int $messageId): bool
     {
         $email = (string) ($ticket['customerEmail'] ?? '');
         if (!$this->enabled() || $email === '') {
-            return;
+            return false;
         }
         $root = $this->customerRoot($ticket['ticketId']);
         $text = trim($ticket['message']);
@@ -101,7 +104,7 @@ final class SupportNotifier
                 . (self::isWebsite($ticket) ? 'the chat on nexapos.cc' : 'NexaPOS > Support') . ' to see '
                 . ($count === 1 ? 'it' : 'them') . '.)'
             : '';
-        $this->mailer->send(
+        return $this->mailer->send(
             $email,
             self::customerSubject($ticket),
             "NexaPOS Support replied to ticket #{$ticket['ticketId']}: " . self::line($ticket['subject'])

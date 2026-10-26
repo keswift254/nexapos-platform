@@ -179,7 +179,7 @@ check(($adminThread['ticket']['channel'] ?? '') === 'website' && ($adminThread['
 // --- every support reply is copied to the client's email
 $before = count(mails($capture));
 $answer = call($baseUrl, 'admin_support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Yes - 1.0.74 has a Windows 7/8 edition. Which PCs?', 'reply_to_id' => $followId], $admin);
-check($answer['status'] === 200, 'the vendor can reply to the website chat');
+check($answer['status'] === 200 && ($answer['body']['emailed'] ?? null) === true, 'the vendor can reply to the website chat, and is told the copy was emailed');
 $answerId = (int) $answer['body']['message_id'];
 $sent = array_slice(mails($capture), $before);
 $toVisitor = $sent[0] ?? [];
@@ -280,7 +280,8 @@ $otherShop = (string) call($baseUrl, 'register_device', 'POST', ['device_id' => 
 $pdo->exec("INSERT INTO support_tickets (shop_id, opened_by_client_id, subject, customer_email, status) SELECT shop_id, id, 'Never had an email', NULL, 'open' FROM clients WHERE device_id = 'webchat-solo-$unique'");
 $noAddressId = (int) $pdo->lastInsertId();
 $before = count(mails($capture));
-check(call($baseUrl, 'admin_support_reply', 'POST', ['ticket_id' => $noAddressId, 'message' => 'Hello?'], $admin)['status'] === 200 && count(mails($capture)) === $before,
+$noCopy = call($baseUrl, 'admin_support_reply', 'POST', ['ticket_id' => $noAddressId, 'message' => 'Hello?'], $admin);
+check($noCopy['status'] === 200 && ($noCopy['body']['emailed'] ?? null) === false && count(mails($capture)) === $before,
     'with no address anywhere the reply is still saved and simply not emailed');
 
 // --- limits: nobody can use the public chat to flood the inbox or mail strangers

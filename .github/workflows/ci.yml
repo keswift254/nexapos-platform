@@ -75,6 +75,7 @@ jobs:
             sleep 1
           done
           TEST_PLATFORM_URL=http://127.0.0.1:8081/index.php TEST_SMTP_CAPTURE=/tmp/smtp.jsonl php tests/integration/support_chat.php
+          TEST_PLATFORM_URL=http://127.0.0.1:8081/index.php TEST_SMTP_CAPTURE=/tmp/smtp.jsonl php tests/integration/web_chat.php
       - name: Show server logs on failure
         if: failure()
         run: cat /tmp/platform.log /tmp/paystack.log /tmp/platform-chat.log /tmp/smtp.log

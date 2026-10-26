@@ -235,6 +235,106 @@ function supportSetReaction(PDO $pdo, int $ticketId, int $messageId, string $sen
 }
 
 /**
+ * The address replies to a ticket are emailed to: the one given on the ticket, or - for a ticket
+ * opened before an email address was required - the one its shop gave on an earlier ticket.
+ */
+function supportCustomerEmail(PDO $pdo, array $ticket): ?string
+{
+    $email = trim((string) ($ticket['customer_email'] ?? ''));
+    if ($email !== '') {
+        return $email;
+    }
+    if (empty($ticket['shop_id'])) {
+        return null;
+    }
+    $stmt = $pdo->prepare(
+        "SELECT customer_email FROM support_tickets
+         WHERE shop_id = ? AND customer_email IS NOT NULL AND customer_email <> '' ORDER BY id DESC LIMIT 1"
+    );
+    $stmt->execute([(int) $ticket['shop_id']]);
+    $found = $stmt->fetchColumn();
+    return $found === false ? null : (string) $found;
+}
+
+/** A valid email address, or null. A ticket's contact address must be one a reply can really reach. */
+function supportValidEmail($raw): ?string
+{
+    $email = trim((string) $raw);
+    if ($email === '' || strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return null;
+    }
+    return $email;
+}
+
+/** One line of at most $max characters: control characters become spaces. */
+function webChatLine($raw, int $max): string
+{
+    $text = trim((string) preg_replace('/[\x00-\x1F\x7F\s]+/u', ' ', (string) $raw));
+    return mb_substr($text, 0, $max);
+}
+
+/**
+ * The visitor's chat, if the secret their browser sent belongs to it. Only a hash of the secret
+ * is stored, and the comparison does not leak how much of it matched.
+ */
+function webChatTicket(PDO $pdo, int $ticketId, string $token): ?array
+{
+    if ($ticketId <= 0 || !preg_match('/^[a-f0-9]{64}$/', $token)) {
+        return null;
+    }
+    $stmt = $pdo->prepare(
+        "SELECT id, subject, customer_email, status, visitor_name, visitor_token_hash, created_at, updated_at
+         FROM support_tickets WHERE id = ? AND channel = 'website'"
+    );
+    $stmt->execute([$ticketId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row || !hash_equals((string) $row['visitor_token_hash'], hash('sha256', $token))) {
+        return null;
+    }
+    unset($row['visitor_token_hash']);
+    return normalizeSupportTicket($row);
+}
+
+/** A keyed hash of the visitor's network address: enough to count messages per address, useless for finding anyone. */
+function webChatSourceHash(array $platformConfig): string
+{
+    $key = (string) ($platformConfig['admin_secret'] ?? '') ?: 'nexapos-website-chat';
+    return hash_hmac('sha256', (string) ($_SERVER['REMOTE_ADDR'] ?? ''), $key);
+}
+
+/**
+ * How many photos a visitor may send: 12 an hour from one network address, 150 an hour overall.
+ * $count is how many the message carries (not yet checked as images - this runs before that work).
+ */
+function webChatPhotoLimit(PDO $pdo, string $ipHash, int $count): void
+{
+    if ($count <= 0) {
+        return;
+    }
+    $join = 'SELECT COUNT(*) FROM support_attachments a JOIN support_messages m ON m.id = a.message_id
+             WHERE m.created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)';
+    $own = $pdo->prepare($join . ' AND m.source_ip_hash = ?');
+    $own->execute([$ipHash]);
+    if ((int) $own->fetchColumn() + $count > 12) {
+        jsonResponse(['success' => false, 'message' => 'You have sent a lot of photos. Please try again in a little while.'], 429);
+    }
+    $all = $pdo->query($join . ' AND m.source_ip_hash IS NOT NULL');
+    if ((int) $all->fetchColumn() + $count > 150) {
+        jsonResponse(['success' => false, 'message' => 'Photo uploads are very busy right now. Please try again in a little while.'], 429);
+    }
+}
+
+/** One count against one limit; answers 429 itself when the limit is reached. */
+function webChatLimit(PDO $pdo, string $sql, array $params, int $limit, string $message): void
+{
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    if ((int) $stmt->fetchColumn() >= $limit) {
+        jsonResponse(['success' => false, 'message' => $message], 429);
+    }
+}
+
+/**
  * Same case-insensitive-header gotcha Auth::authorizationHeader()
  * already documents: $_SERVER['HTTP_...'] is unset under some
  * Apache/PHP configs, and a literal getallheaders() lookup misses
@@ -326,8 +426,10 @@ $allowedOrigins = $platformConfig['cors_allowed_origins'] ?? [];
 if ($origin !== '' && in_array($origin, $allowedOrigins, true)) {
     header('Access-Control-Allow-Origin: ' . $origin);
     header('Vary: Origin');
+    // The website chat polls with a custom header; let the browser reuse one preflight answer.
+    header('Access-Control-Max-Age: 600');
 }
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Admin-Secret');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Admin-Secret, X-Chat-Token');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 if ($method === 'OPTIONS') {
     if ($origin !== '' && !in_array($origin, $allowedOrigins, true)) {
@@ -443,15 +545,25 @@ if ($action === 'support_open' && $method === 'POST') {
     $subject = trim((string) ($body['subject'] ?? ''));
     $message = trim((string) ($body['message'] ?? ''));
     $images = supportImages($body);
-    $email = trim((string) ($body['email'] ?? ''));
+    $given = trim((string) ($body['email'] ?? ''));
     if (mb_strlen($subject) < 3 || mb_strlen($subject) > 160) {
         jsonResponse(['success' => false, 'message' => 'Subject must be between 3 and 160 characters.'], 422);
     }
     if (($message === '' && !$images) || mb_strlen($message) > 8000) {
         jsonResponse(['success' => false, 'message' => 'Describe the issue in 1 to 8000 characters.'], 422);
     }
-    if ($email !== '' && (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL))) {
-        jsonResponse(['success' => false, 'message' => 'Enter a valid email address or leave it blank.'], 422);
+    // An email address is required: every reply support writes is also emailed there. An older app
+    // that leaves the field blank is served by the address its shop gave on an earlier ticket.
+    if ($given !== '') {
+        $email = supportValidEmail($given);
+        if ($email === null) {
+            jsonResponse(['success' => false, 'message' => 'Enter a valid email address.'], 422);
+        }
+    } else {
+        $email = supportCustomerEmail($pdo, ['shop_id' => $client['shop_id']]);
+        if ($email === null) {
+            jsonResponse(['success' => false, 'message' => 'An email address is required so we can send you a copy of every reply.'], 422);
+        }
     }
     $pdo->beginTransaction();
     try {
@@ -566,7 +678,7 @@ if ($action === 'support_reply' && $method === 'POST') {
         'shopId' => (int) $client['shop_id'],
         'deviceId' => (string) ($client['device_id'] ?? ''),
         'deviceLabel' => (string) ($client['device_label'] ?? ''),
-        'customerEmail' => ($ticket['customer_email'] ?? '') !== '' ? (string) $ticket['customer_email'] : null,
+        'customerEmail' => supportCustomerEmail($pdo, $ticket),
         'message' => $message,
         'photoCount' => count($images),
     ], $messageId);
@@ -597,6 +709,185 @@ if ($action === 'support_close' && $method === 'POST') {
     jsonResponse(['success' => true]);
 }
 
+// Support chat on the public website (nexapos.cc). A visitor has no shop and no device, so
+// instead of a device key they hold a secret that only that browser knows: ?action=web_chat_start
+// hands it out once, and every later call sends it in X-Chat-Token. The ticket lives in the same
+// tables as an app ticket (channel 'website', no shop), so the vendor answers it from the same
+// dashboard, and every reply is emailed to the address the visitor had to give. Anyone on the
+// internet can call these, so each one is limited per network address, per email address and
+// overall, and nothing here ever emails an address the visitor did not type in.
+const WEB_CHAT_MAX_MESSAGE = 2000;
+
+/** The visitor's message text: no control characters except line breaks and tabs. */
+function webChatText($raw): string
+{
+    return trim((string) preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/u', '', (string) $raw));
+}
+
+if ($action === 'web_chat_start' && $method === 'POST') {
+    $body = requestBody();
+    // A hidden field no person ever sees: only a bot fills it in. It is answered like a success
+    // (so the bot moves on) but nothing is stored or sent.
+    if (trim((string) ($body['website'] ?? '')) !== '') {
+        jsonResponse(['success' => true, 'ticket_id' => 0, 'token' => bin2hex(random_bytes(32))], 201);
+    }
+    $name = webChatLine($body['name'] ?? '', 80);
+    $email = supportValidEmail($body['email'] ?? '');
+    $message = webChatText($body['message'] ?? '');
+    if ($email === null) {
+        jsonResponse(['success' => false, 'message' => 'Enter your email address - we send a copy of every reply there.'], 422);
+    }
+    $photoCount = is_array($body['attachments'] ?? null) ? count($body['attachments']) : 0;
+    if (mb_strlen($message) > WEB_CHAT_MAX_MESSAGE || (mb_strlen($message) < 2 && $photoCount === 0)) {
+        jsonResponse(['success' => false, 'message' => 'Write your message in 2 to ' . WEB_CHAT_MAX_MESSAGE . ' characters.'], 422);
+    }
+    $ipHash = webChatSourceHash($platformConfig);
+    $tooMany ='Too many chats were started just now. Please try again in a little while, or message us on WhatsApp.';
+    webChatLimit(
+        $pdo,
+        "SELECT COUNT(*) FROM support_messages m
+         WHERE m.source_ip_hash = ? AND m.created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+           AND m.id = (SELECT MIN(earliest.id) FROM support_messages earliest WHERE earliest.ticket_id = m.ticket_id)",
+        [$ipHash], 4, $tooMany
+    );
+    webChatLimit(
+        $pdo,
+        "SELECT COUNT(*) FROM support_tickets WHERE channel = 'website' AND customer_email = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)",
+        [$email], 3, $tooMany
+    );
+    webChatLimit(
+        $pdo,
+        'SELECT COUNT(*) FROM support_messages WHERE source_ip_hash IS NOT NULL AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)',
+        [], 400, 'Chat is very busy right now. Please try again in a little while, or message us on WhatsApp.'
+    );
+    webChatPhotoLimit($pdo, $ipHash, $photoCount);
+    $images = supportImages($body);
+
+    $line = webChatLine($message, 200);
+    $subject = mb_strlen($line) >= 3 ? (mb_strlen($line) > 60 ? rtrim(mb_substr($line, 0, 59)) . '…' : $line) : ($images ? 'Website chat (photo)' : 'Website chat');
+    $token = bin2hex(random_bytes(32));
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare(
+            "INSERT INTO support_tickets (shop_id, opened_by_client_id, subject, customer_email, status, channel, visitor_name, visitor_token_hash)
+             VALUES (NULL, NULL, ?, ?, 'open', 'website', ?, ?)"
+        )->execute([$subject, $email, $name !== '' ? $name : null, hash('sha256', $token)]);
+        $ticketId = (int) $pdo->lastInsertId();
+        $pdo->prepare("INSERT INTO support_messages (ticket_id, client_id, sender, body, source_ip_hash) VALUES (?, NULL, 'customer', ?, ?)")
+            ->execute([$ticketId, $message, $ipHash]);
+        SupportAttachments::save($pdo, $ticketId, (int) $pdo->lastInsertId(), $images);
+        $pdo->commit();
+    } catch (\Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($e instanceof InvalidArgumentException) jsonResponse(['success' => false, 'message' => $e->getMessage()], 422);
+        throw $e;
+    }
+    SupportNotifier::fromConfig($platformConfig)->ticketOpened([
+        'ticketId' => $ticketId,
+        'subject' => $subject,
+        'shopName' => '',
+        'shopId' => 0,
+        'deviceId' => '',
+        'deviceLabel' => '',
+        'customerEmail' => $email,
+        'message' => $message,
+        'photoCount' => count($images),
+        'channel' => 'website',
+        'visitorName' => $name,
+    ]);
+    jsonResponse(['success' => true, 'ticket_id' => $ticketId, 'token' => $token], 201);
+}
+
+if ($action === 'web_chat_thread' && $method === 'GET') {
+    $ticketId = (int) ($_GET['ticket_id'] ?? 0);
+    $ticket = webChatTicket($pdo, $ticketId, trim(headerValue('X-Chat-Token')));
+    if ($ticket === null) {
+        jsonResponse(['success' => false, 'message' => 'Chat not found.'], 404);
+    }
+    // The widget asks for this only while the conversation is on screen: that is what "read" means.
+    if (($_GET['mark_read'] ?? '') === '1') {
+        $pdo->prepare("UPDATE support_messages SET read_at = UTC_TIMESTAMP() WHERE ticket_id = ? AND sender = 'support' AND read_at IS NULL")
+            ->execute([$ticketId]);
+    }
+    unset($ticket['customer_email']);
+    jsonResponse(['success' => true, 'ticket' => $ticket, 'messages' => supportThreadMessages($pdo, $ticketId, false)]);
+}
+
+if ($action === 'web_chat_send' && $method === 'POST') {
+    $body = requestBody();
+    $ticketId = (int) ($body['ticket_id'] ?? 0);
+    $ticket = webChatTicket($pdo, $ticketId, trim(headerValue('X-Chat-Token')));
+    if ($ticket === null) {
+        jsonResponse(['success' => false, 'message' => 'Chat not found.'], 404);
+    }
+    $message = webChatText($body['message'] ?? '');
+    $photoCount = is_array($body['attachments'] ?? null) ? count($body['attachments']) : 0;
+    if (($message === '' && $photoCount === 0) || mb_strlen($message) > WEB_CHAT_MAX_MESSAGE) {
+        jsonResponse(['success' => false, 'message' => 'Write your message in 1 to ' . WEB_CHAT_MAX_MESSAGE . ' characters.'], 422);
+    }
+    $ipHash = webChatSourceHash($platformConfig);
+    webChatLimit(
+        $pdo,
+        'SELECT COUNT(*) FROM support_messages WHERE source_ip_hash = ? AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)',
+        [$ipHash], 30, 'You are sending messages very quickly. Please wait a moment.'
+    );
+    webChatLimit(
+        $pdo,
+        "SELECT COUNT(*) FROM support_messages WHERE ticket_id = ? AND sender = 'customer'",
+        [$ticketId], 200, 'This chat has reached its message limit. Please start a new chat.'
+    );
+    webChatLimit(
+        $pdo,
+        'SELECT COUNT(*) FROM support_messages WHERE source_ip_hash IS NOT NULL AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)',
+        [], 400, 'Chat is very busy right now. Please try again in a little while, or message us on WhatsApp.'
+    );
+    webChatPhotoLimit($pdo, $ipHash, $photoCount);
+    $images = supportImages($body);
+    $replyTo = supportReplyTarget($pdo, $ticketId, $body['reply_to_id'] ?? null);
+    $messageId = 0;
+    supportWrite($pdo, function () use ($pdo, $ticketId, $message, $images, $replyTo, $ipHash, &$messageId) {
+        $pdo->prepare("INSERT INTO support_messages (ticket_id, client_id, sender, body, reply_to_id, source_ip_hash) VALUES (?, NULL, 'customer', ?, ?, ?)")
+            ->execute([$ticketId, $message, $replyTo, $ipHash]);
+        $messageId = (int) $pdo->lastInsertId();
+        SupportAttachments::save($pdo, $ticketId, $messageId, $images);
+        $pdo->prepare("UPDATE support_tickets SET status = 'open', updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$ticketId]);
+    });
+    SupportNotifier::fromConfig($platformConfig)->customerReplied([
+        'ticketId' => $ticketId,
+        'subject' => (string) $ticket['subject'],
+        'shopName' => '',
+        'shopId' => 0,
+        'deviceId' => '',
+        'deviceLabel' => '',
+        'customerEmail' => (string) $ticket['customer_email'],
+        'message' => $message,
+        'photoCount' => count($images),
+        'channel' => 'website',
+        'visitorName' => (string) ($ticket['visitor_name'] ?? ''),
+    ], $messageId);
+    jsonResponse(['success' => true, 'message_id' => $messageId]);
+}
+
+// A photo support attached to a reply in the visitor's own chat. The browser fetches it with its
+// secret in the header (a plain <img> cannot send one) and shows it from the bytes.
+if ($action === 'web_chat_attachment' && $method === 'GET') {
+    $ticketId = (int) ($_GET['ticket_id'] ?? 0);
+    if (webChatTicket($pdo, $ticketId, trim(headerValue('X-Chat-Token'))) === null) {
+        jsonResponse(['success' => false, 'message' => 'Chat not found.'], 404);
+    }
+    $query = $pdo->prepare('SELECT mime_type, image_data FROM support_attachments WHERE id = ? AND ticket_id = ?');
+    $query->execute([(int) ($_GET['id'] ?? 0), $ticketId]);
+    $image = $query->fetch(PDO::FETCH_ASSOC);
+    if (!$image) jsonResponse(['success' => false, 'message' => 'Photo not found.'], 404);
+    while (ob_get_level() > 0) ob_end_clean();
+    header('Content-Type: ' . $image['mime_type']);
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: private, no-store');
+    header("Content-Security-Policy: default-src 'none'");
+    echo $image['image_data'];
+    exit;
+}
+
 // The vendor's side of support - every action above is shop-scoped (a
 // device can only ever see its own shop's tickets); these are
 // requireAdmin-gated instead, so the vendor can see and answer every
@@ -606,11 +897,12 @@ if ($action === 'admin_list_support_tickets' && $method === 'GET') {
     $stmt = $pdo->query(
         "SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
                 support_tickets.subject, support_tickets.customer_email, support_tickets.status,
+                support_tickets.channel, support_tickets.visitor_name,
                 support_tickets.created_at, support_tickets.updated_at,
                  (SELECT COUNT(*) FROM support_messages WHERE support_messages.ticket_id = support_tickets.id) AS message_count,
                  (SELECT COUNT(*) FROM support_attachments WHERE support_attachments.ticket_id = support_tickets.id) AS attachment_count
          FROM support_tickets
-         JOIN shops ON shops.id = support_tickets.shop_id
+         LEFT JOIN shops ON shops.id = support_tickets.shop_id
          ORDER BY FIELD(support_tickets.status, 'open', 'pending', 'closed'), support_tickets.updated_at DESC
          LIMIT 500"
     );
@@ -623,9 +915,10 @@ if ($action === 'admin_support_thread' && $method === 'GET') {
     $stmt = $pdo->prepare(
         'SELECT support_tickets.id, support_tickets.shop_id, shops.business_name,
                 support_tickets.subject, support_tickets.customer_email, support_tickets.status,
+                support_tickets.channel, support_tickets.visitor_name,
                 support_tickets.created_at, support_tickets.updated_at,
                 opener.device_id AS opened_by_device_id, opener.device_label AS opened_by_device_label
-         FROM support_tickets JOIN shops ON shops.id = support_tickets.shop_id
+         FROM support_tickets LEFT JOIN shops ON shops.id = support_tickets.shop_id
          LEFT JOIN clients opener ON opener.id = support_tickets.opened_by_client_id
          WHERE support_tickets.id = ?'
     );
@@ -656,8 +949,9 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $message = trim((string) ($body['message'] ?? ''));
     $images = supportImages($body);
     $exists = $pdo->prepare(
-        'SELECT support_tickets.subject, support_tickets.customer_email, support_tickets.shop_id, shops.business_name
-         FROM support_tickets JOIN shops ON shops.id = support_tickets.shop_id WHERE support_tickets.id = ?'
+        'SELECT support_tickets.subject, support_tickets.customer_email, support_tickets.shop_id, support_tickets.channel,
+                support_tickets.visitor_name, shops.business_name
+         FROM support_tickets LEFT JOIN shops ON shops.id = support_tickets.shop_id WHERE support_tickets.id = ?'
     );
     $exists->execute([$ticketId]);
     $recipient = $exists->fetch(PDO::FETCH_ASSOC);
@@ -680,18 +974,21 @@ if ($action === 'admin_support_reply' && $method === 'POST') {
     $pdo->prepare("UPDATE support_tickets SET status = 'pending', updated_at = UTC_TIMESTAMP() WHERE id = ?")
         ->execute([$ticketId]);
     });
-    SupportNotifier::fromConfig($platformConfig)->supportReplied([
+    $emailed = SupportNotifier::fromConfig($platformConfig)->supportReplied([
         'ticketId' => $ticketId,
         'subject' => (string) $recipient['subject'],
         'shopName' => (string) ($recipient['business_name'] ?? ''),
         'shopId' => (int) $recipient['shop_id'],
         'deviceId' => '',
         'deviceLabel' => '',
-        'customerEmail' => ($recipient['customer_email'] ?? '') !== '' ? (string) $recipient['customer_email'] : null,
+        // Every reply is copied to the client's email, whichever way they wrote in.
+        'customerEmail' => supportCustomerEmail($pdo, $recipient),
         'message' => $message,
         'photoCount' => count($images),
+        'channel' => (string) $recipient['channel'],
+        'visitorName' => (string) ($recipient['visitor_name'] ?? ''),
     ], $messageId);
-    jsonResponse(['success' => true, 'message_id' => $messageId]);
+    jsonResponse(['success' => true, 'message_id' => $messageId, 'emailed' => $emailed]);
 }
 
 // The vendor's reaction to a message (see support_react).

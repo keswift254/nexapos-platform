@@ -266,14 +266,18 @@ CREATE TABLE IF NOT EXISTS sync_snapshot_rows (
 -- 'applied' without ever having run its SQL - see Database::bootstrapDatabase).
 CREATE TABLE IF NOT EXISTS support_tickets (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    shop_id INT NOT NULL,
-    opened_by_client_id INT NOT NULL,
+    shop_id INT NULL,
+    opened_by_client_id INT NULL,
     subject VARCHAR(160) NOT NULL,
     customer_email VARCHAR(254) NULL,
     status ENUM('open','pending','closed') NOT NULL DEFAULT 'open',
+    channel ENUM('app','website') NOT NULL DEFAULT 'app',
+    visitor_name VARCHAR(80) NULL,
+    visitor_token_hash CHAR(64) NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_support_tickets_shop_updated (shop_id, updated_at),
+    UNIQUE INDEX uq_support_visitor_token (visitor_token_hash),
     FOREIGN KEY (shop_id) REFERENCES shops(id),
     FOREIGN KEY (opened_by_client_id) REFERENCES clients(id)
 );
@@ -286,8 +290,10 @@ CREATE TABLE IF NOT EXISTS support_messages (
     body TEXT NOT NULL,
     reply_to_id BIGINT NULL,
     read_at TIMESTAMP NULL DEFAULT NULL,
+    source_ip_hash CHAR(64) NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_support_messages_ticket (ticket_id, id),
+    INDEX idx_support_messages_source (source_ip_hash, created_at),
     FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES clients(id)
 );

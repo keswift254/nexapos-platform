@@ -52,7 +52,17 @@ class PaystackClient
         ]);
     }
 
-    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false): array
+    /**
+     * Where Paystack sends the customer's browser after the payment page.
+     * Native apps bounce into a nexapos:// link; the web POS (which runs in a
+     * browser tab or an iPhone Home Screen app) gets a small page that hands the
+     * customer back to the running web app. Both are fixed here - a client only
+     * chooses between them, it never supplies a URL.
+     */
+    public const NATIVE_RETURN_URL = 'https://keswift254.github.io/nexapos-site/checkout-return.html';
+    public const WEB_RETURN_URL = 'https://nexapos.cc/payment-return.html';
+
+    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false, bool $returnToWeb = false): array
     {
         $payload = [
             'email' => $email,
@@ -64,8 +74,10 @@ class PaystackClient
             'bearer' => 'subaccount',
             'metadata' => $metadata,
         ];
-        if ($returnToApp) {
-            $payload['callback_url'] = 'https://keswift254.github.io/nexapos-site/checkout-return.html';
+        if ($returnToWeb) {
+            $payload['callback_url'] = self::WEB_RETURN_URL;
+        } elseif ($returnToApp) {
+            $payload['callback_url'] = self::NATIVE_RETURN_URL;
         }
         return $this->request('POST', '/transaction/initialize', $payload);
     }

@@ -2001,7 +2001,7 @@ if ($action === 'initialize_transaction' && $method === 'POST') {
     $metadata = ['client_id' => $client['id'], 'device_label' => $client['device_label'], 'source' => 'NexaPOS'];
 
     try {
-        $result = (new PaystackClient())->initializeTransaction($amount, $reference, $email, $currency, $client['subaccount_code'], $metadata, ($body['return_to_app'] ?? false) === true);
+        $result = (new PaystackClient())->initializeTransaction($amount, $reference, $email, $currency, $client['subaccount_code'], $metadata, ($body['return_to_app'] ?? false) === true, ($body['return_to'] ?? '') === 'web');
     } catch (\Throwable $e) {
         jsonResponse(['status' => false, 'message' => 'Could not reach Paystack: ' . $e->getMessage()], 502);
     }

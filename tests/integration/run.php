@@ -444,6 +444,27 @@ $nativeStatus = request($baseUrl, 'client_status', 'GET', null, ['Authorization:
 check($nativeStatus['status'] === 200 && ($nativeStatus['body']['business_name'] ?? null) === 'Control Shop',
     'client_status must NOT redact settlement fields for a native-channel client (control case).');
 
+// Where the customer's browser goes after paying. initialize_transaction relays the request to
+// Paystack and the fake echoes the payload it received, so callback_url is exactly what
+// Paystack would have been told. A client only picks between fixed destinations.
+$initializeAs = static fn (array $extra): array => request($baseUrl, 'initialize_transaction', 'POST', array_merge([
+    'email' => 'buyer@example.com', 'amount' => 5000, 'currency' => 'KES', 'reference' => 'RETURN-' . bin2hex(random_bytes(4)),
+], $extra), ['Authorization: Bearer ' . $nativeOwner['body']['api_key']]);
+$plainInit = $initializeAs([]);
+check($plainInit['status'] === 200 && !isset($plainInit['body']['data']['callback_url']),
+    'A client that asked for no return was given a callback: ' . $plainInit['raw']);
+$nativeInit = $initializeAs(['return_to_app' => true]);
+check(($nativeInit['body']['data']['callback_url'] ?? '') === 'https://keswift254.github.io/nexapos-site/checkout-return.html',
+    'The native app return changed: ' . $nativeInit['raw']);
+$webInit = $initializeAs(['return_to' => 'web']);
+check(($webInit['body']['data']['callback_url'] ?? '') === 'https://nexapos.cc/payment-return.html',
+    'The web POS was not sent back to its own return page: ' . $webInit['raw']);
+check(($webInit['body']['data']['transaction_charge'] ?? -1) === 0 && ($webInit['body']['data']['subaccount'] ?? '') === 'SUB_CONTROL',
+    'The web return changed the settlement split: ' . $webInit['raw']);
+$spoofInit = $initializeAs(['return_to' => 'https://evil.example/steal', 'callback_url' => 'https://evil.example/steal']);
+check($spoofInit['status'] === 200 && !isset($spoofInit['body']['data']['callback_url']),
+    'A client-supplied return address reached Paystack: ' . $spoofInit['raw']);
+
 // Support tickets: a real round trip, not just "the route exists" (the
 // separate verify-production-1.0.57.yml workflow only checks for a 401/403
 // on an unauthenticated support_list - it never opened a ticket for real).

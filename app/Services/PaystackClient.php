@@ -62,8 +62,8 @@ class PaystackClient
     public const NATIVE_RETURN_URL = 'https://keswift254.github.io/nexapos-site/checkout-return.html';
     public const WEB_RETURN_URL = 'https://nexapos.cc/payment-return.html';
 
-    /** Not a mailbox: the domain only has to look like one to Paystack. */
-    public const CUSTOMER_EMAIL_DOMAIN = 'customers.nexapos.cc';
+    /** The platform's own domain. The part before the @ is made up, so no mailbox exists for it: keep the domain's default (catch-all) mail address set to reject, or every receipt Paystack sends lands there. */
+    public const CUSTOMER_EMAIL_DOMAIN = 'nexapos.cc';
 
     /**
      * The email address Paystack is given for a payment.

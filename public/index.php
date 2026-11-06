@@ -17,6 +17,8 @@ use Platform\Core\Auth;
 use Platform\Core\Database;
 use Platform\Core\InviteCode;
 use Platform\Services\PaystackClient;
+use Platform\Services\SyncGuard;
+use Platform\Services\SyncGuardViolation;
 use Platform\Services\PaymentReconciler;
 use Platform\Services\IntaSendClient;
 use Platform\Services\IntaSendReconciler;
@@ -1202,7 +1204,10 @@ if ($action === 'register_device' && $method === 'POST') {
     // build predating this field) is treated as 'native', so this is
     // opt-in for the browser build specifically, never something a
     // client can accidentally leave itself gated out of.
-    $channel = ($body['channel'] ?? '') === 'browser' ? 'browser' : 'native';
+    // 'lite' is the plain-JavaScript till for old iPads: browser restrictions plus a strict check of
+    // everything it pushes (see SyncGuard). Anything unrecognised is 'native'.
+    $requestedChannel = (string) ($body['channel'] ?? '');
+    $channel = in_array($requestedChannel, ['browser', 'lite'], true) ? $requestedChannel : 'native';
     if ($deviceId === '') {
         jsonResponse(['success' => false, 'message' => 'device_id is required.'], 422);
     }
@@ -1584,6 +1589,42 @@ if ($action === 'push_changes' && $method === 'POST') {
         // invariant for every other device's pull.
         $shopLock = $pdo->prepare('SELECT id FROM shops WHERE id = ? FOR UPDATE');
         $shopLock->execute([$client['shop_id']]);
+        if ($client['channel'] === 'lite') {
+            // A lite till (plain JavaScript on an old iPad) is held to exactly what the real app writes.
+            // Changes already recorded (a retry after a lost reply) are left to the normal duplicate
+            // check below; only the new ones are vetted, against what the shop already holds.
+            $latestRow = $pdo->prepare('SELECT payload FROM sync_changes WHERE shop_id = ? AND table_name = ? AND row_id = ? ORDER BY id DESC LIMIT 1');
+            $itemsOfSale = $pdo->prepare("SELECT payload FROM sync_changes WHERE shop_id = ? AND table_name = 'sale_items' AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.saleId')) = ?");
+            $storedRow = static function (string $table, string $rowId) use ($latestRow, $client): ?array {
+                $latestRow->execute([$client['shop_id'], $table, $rowId]);
+                $json = $latestRow->fetchColumn();
+                $decoded = is_string($json) ? json_decode($json, true) : null;
+                return is_array($decoded) ? $decoded : null;
+            };
+            $storedItems = static function (string $saleId) use ($itemsOfSale, $client): array {
+                $itemsOfSale->execute([$client['shop_id'], $saleId]);
+                return array_values(array_filter(array_map(
+                    static fn ($json): mixed => is_string($json) ? json_decode($json, true) : null,
+                    $itemsOfSale->fetchAll(PDO::FETCH_COLUMN)
+                ), 'is_array'));
+            };
+            $newChanges = [];
+            foreach ($changes as $candidate) {
+                $alreadyRecorded = false;
+                if (is_array($candidate) && (int) ($candidate['local_rev'] ?? 0) > 0) {
+                    $existingRevision->execute([$client['shop_id'], $client['device_id'], (int) $candidate['local_rev']]);
+                    $alreadyRecorded = (bool) $existingRevision->fetch(PDO::FETCH_ASSOC);
+                }
+                if (!$alreadyRecorded) {
+                    $newChanges[] = $candidate;
+                }
+            }
+            try {
+                SyncGuard::check($newChanges, (string) $client['device_id'], $storedRow, $storedItems);
+            } catch (SyncGuardViolation $violation) {
+                throw new \RuntimeException($violation->getMessage());
+            }
+        }
         $encodedBytes = 0;
         $validatedRelaySources = [];
         $requestByteLimit = max(1_048_576, min(67_108_864, (int) ($platformConfig['sync_request_payload_limit_bytes'] ?? 16_777_216)));
@@ -1791,7 +1832,7 @@ if ($action === 'save_settlement_details' && $method === 'POST') {
     // shop and legitimately BE its owner - the channel gate exists
     // specifically so "owner" still isn't enough once the device is a
     // browser tab. See clients.channel's own schema comment.
-    if ($client['channel'] === 'browser') {
+    if (in_array($client['channel'], ['browser', 'lite'], true)) {
         jsonResponse(['success' => false, 'message' => 'Settlement details cannot be changed from a browser session. Use the installed app on a phone or PC instead.'], 403);
     }
 
@@ -1855,7 +1896,7 @@ if ($action === 'client_status' && $method === 'GET') {
     // response (sync_service.dart, license_service.dart,
     // shop_safety_service.dart) only ever reads those three fields, never
     // the settlement ones, confirmed by inspection before adding this.
-    $isBrowser = $client['channel'] === 'browser';
+    $isBrowser = in_array($client['channel'], ['browser', 'lite'], true);
     jsonResponse([
         'success' => true,
         'shop_id' => (int) $client['shop_id'],
@@ -1912,7 +1953,7 @@ function shopLicenseView(array $client): ?array
  */
 if ($action === 'report_shop_license' && $method === 'POST') {
     $client = Auth::requireClient($pdo);
-    if (!(bool) $client['is_owner'] || $client['channel'] === 'browser') {
+    if (!(bool) $client['is_owner'] || in_array($client['channel'], ['browser', 'lite'], true)) {
         jsonResponse(['success' => false, 'message' => "Only the shop's main device can report its license."], 403);
     }
     $body = requestBody();
@@ -1949,7 +1990,7 @@ if ($action === 'list_banks' && $method === 'GET') {
     // No legitimate reason a browser client would ever need this list -
     // it only exists to populate save_settlement_details' form, which is
     // already unconditionally blocked for this channel above.
-    if ($client['channel'] === 'browser') {
+    if (in_array($client['channel'], ['browser', 'lite'], true)) {
         jsonResponse(['success' => false, 'message' => 'Not available from a browser session.'], 403);
     }
 

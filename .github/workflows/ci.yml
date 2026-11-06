@@ -55,6 +55,8 @@ jobs:
           exit 1
       - name: Run integration tests
         run: php tests/integration/run.php
+      - name: Verify the Lite till sync guard (real app records accepted, bad ones refused)
+        run: php tests/verify_sync_guard.php
       - name: Verify the support email sender (SMTP)
         run: php tests/verify_smtp_client.php
       - name: Verify initial sync snapshots

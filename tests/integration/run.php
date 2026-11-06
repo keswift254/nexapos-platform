@@ -461,6 +461,18 @@ check(($webInit['body']['data']['callback_url'] ?? '') === 'https://nexapos.cc/p
     'The web POS was not sent back to its own return page: ' . $webInit['raw']);
 check(($webInit['body']['data']['transaction_charge'] ?? -1) === 0 && ($webInit['body']['data']['subaccount'] ?? '') === 'SUB_CONTROL',
     'The web return changed the settlement split: ' . $webInit['raw']);
+// The email Paystack is given is never the one the app sent (the shop's shared default): Paystack
+// blocks a business that uses one address for every payment.
+check(($plainInit['body']['data']['email'] ?? '') !== 'buyer@example.com'
+    && str_ends_with((string) ($plainInit['body']['data']['email'] ?? ''), '@customers.nexapos.cc'),
+    'The shop\'s shared email still reached Paystack: ' . $plainInit['raw']);
+check(($plainInit['body']['data']['email'] ?? '') !== ($nativeInit['body']['data']['email'] ?? ''),
+    'Two payments were given the same email.');
+$phoneInit = $initializeAs(['customer_phone' => '0712 345 678']);
+$phoneInitAgain = $initializeAs(['customer_phone' => '+254712345678']);
+check(($phoneInit['body']['data']['email'] ?? '') === '254712345678@customers.nexapos.cc'
+    && ($phoneInitAgain['body']['data']['email'] ?? '') === ($phoneInit['body']['data']['email'] ?? ''),
+    'The same customer phone must always give the same address: ' . $phoneInit['raw']);
 $spoofInit = $initializeAs(['return_to' => 'https://evil.example/steal', 'callback_url' => 'https://evil.example/steal']);
 check($spoofInit['status'] === 200 && !isset($spoofInit['body']['data']['callback_url']),
     'A client-supplied return address reached Paystack: ' . $spoofInit['raw']);

@@ -39,3 +39,37 @@ foreach ($cases as [$returnToApp, $returnToWeb, $expectedCallback]) {
     }
 }
 echo "Checkout callback tests passed; amount and subaccount preserved.\n";
+
+// The email Paystack sees: never the shop's shared one, valid, and distinct per customer / payment.
+$domain = '@' . Platform\Services\PaystackClient::CUSTOMER_EMAIL_DOMAIN;
+$emailCases = [
+    // [shop, reference, phone, expected address or null (= just check the rules)]
+    [7, 'S-0001', '0712 345 678', '254712345678' . $domain],
+    [7, 'S-0002', '+254 712-345-678', '254712345678' . $domain],
+    [9, 'S-0001', '712345678', '254712345678' . $domain],
+    [7, 'S-0003', '08012345668', '08012345668' . $domain],
+];
+foreach ($emailCases as [$shop, $reference, $phone, $expected]) {
+    $got = Platform\Services\PaystackClient::customerEmail($shop, $reference, $phone);
+    if ($got !== $expected) {
+        throw new RuntimeException("Phone $phone gave $got, expected $expected.");
+    }
+}
+$a = Platform\Services\PaystackClient::customerEmail(7, 'SALE-20261105-0001');
+$b = Platform\Services\PaystackClient::customerEmail(7, 'SALE-20261105-0002');
+$otherShop = Platform\Services\PaystackClient::customerEmail(8, 'SALE-20261105-0001');
+foreach ([$a, $b, $otherShop, Platform\Services\PaystackClient::customerEmail(7, '###', ''), Platform\Services\PaystackClient::customerEmail(7, str_repeat('x', 200))] as $address) {
+    if (filter_var($address, FILTER_VALIDATE_EMAIL) === false || strlen(explode('@', $address)[0]) > 64) {
+        throw new RuntimeException("Not a valid address: $address");
+    }
+}
+if (count(array_unique([$a, $b, $otherShop])) !== 3) {
+    throw new RuntimeException('Two payments shared one address.');
+}
+if ($a !== Platform\Services\PaystackClient::customerEmail(7, 'SALE-20261105-0001')) {
+    throw new RuntimeException('The same payment must always give the same address.');
+}
+if (Platform\Services\PaystackClient::customerEmail(7, 'S-1', '123') === Platform\Services\PaystackClient::customerEmail(7, 'S-2', '123')) {
+    throw new RuntimeException('A too-short phone number must not be treated as a customer.');
+}
+echo "Customer email tests passed; no shared address, always valid.\n";

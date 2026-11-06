@@ -742,6 +742,61 @@ check($liteStatus['status'] === 200 && array_key_exists('subaccount_code', $lite
 $nativeStamp = gmdate('Y-m-d\TH:i:s') . '.500000Z';
 $nativeRow = ['id' => 'native-still-free', 'localRev' => ++$nativeRevision, 'updatedAt' => $nativeStamp, 'createdByDeviceId' => 'lite-shop-native-owner', 'name' => 'Anything'];
 check(request($baseUrl, 'push_changes', 'POST', ['changes' => [['table_name' => 'categories', 'row_id' => 'native-still-free', 'local_rev' => $nativeRevision, 'updated_at' => $nativeStamp, 'payload' => $nativeRow]]], $liteOwnerAuth)['status'] === 200, 'The sync guard got in the way of a normal device.');
+// ---- lite_catalog: the current shop, by the app's own merge rules ------------------------------------------
+$byName = static function (string $scenarioName, string $productName) use ($guardFixture): array {
+    foreach ($guardFixture['scenarios'] as $scenario) {
+        if ($scenario['name'] === $scenarioName) {
+            foreach ($scenario['context']['products'] as $product) {
+                if ($product['name'] === $productName) {
+                    return $product;
+                }
+            }
+        }
+    }
+    throw new RuntimeException("No $productName in $scenarioName.");
+};
+$nativePush = static function (string $table, array $payload) use ($baseUrl, $liteOwnerAuth, &$nativeRevision): array {
+    $payload['createdByDeviceId'] = 'lite-shop-native-owner';
+    $payload['localRev'] = ++$nativeRevision;
+    return request($baseUrl, 'push_changes', 'POST', ['changes' => [['table_name' => $table, 'row_id' => $payload['id'], 'local_rev' => $payload['localRev'], 'updated_at' => $payload['updatedAt'], 'payload' => $payload]]], $liteOwnerAuth);
+};
+$widget = $byName('cash_sale_two_lines', 'Widget');
+$gadget = $byName('cash_sale_two_lines', 'Gadget');
+$cancelledWidget = $byName('paystack_pending_then_cancelled', 'Widget');
+$deletedWidget = $byName('wholesale_sale', 'Widget');
+
+check(request($baseUrl, 'lite_catalog', 'GET', null, $liteOwnerAuth)['status'] === 403, 'A normal device was given the lite catalog.');
+check(request($baseUrl, 'lite_catalog', 'GET', null, [])['status'] === 401, 'The lite catalog was readable with no key.');
+
+$purchase = ['id' => '00000000-0000-4000-8000-0000000000c1', 'createdAt' => $widget['createdAt'], 'updatedAt' => $widget['updatedAt'], 'deletedAt' => null, 'syncState' => 'local_only', 'productId' => $widget['id'], 'userId' => null, 'movementType' => 'purchase', 'quantity' => 50, 'note' => null];
+check($nativePush('stock_movements', $purchase)['status'] === 200, 'Could not record the purchase.');
+// Newest wins, whatever order the versions arrive in: a newer name first, then an OLDER one arriving later.
+$newer = array_merge($gadget, ['name' => 'Gadget Renamed', 'updatedAt' => gmdate('Y-m-d\TH:i:s') . '.100000Z']);
+$older = array_merge($gadget, ['name' => 'Gadget Ancient', 'updatedAt' => '2026-01-01T00:00:00.000000Z']);
+check($nativePush('products', $newer)['status'] === 200 && $nativePush('products', $older)['status'] === 200, 'Could not rename the product.');
+// A deleted product is not listed.
+$deleted = array_merge($deletedWidget, ['deletedAt' => gmdate('Y-m-d\TH:i:s') . '.200000Z', 'updatedAt' => gmdate('Y-m-d\TH:i:s') . '.200000Z']);
+check($nativePush('products', $deleted)['status'] === 200, 'Could not delete the product.');
+
+$catalog = request($baseUrl, 'lite_catalog', 'GET', null, $liteAuth);
+check($catalog['status'] === 200 && ($catalog['body']['success'] ?? false) === true, 'The lite catalog was not served: ' . $catalog['raw']);
+$productsById = [];
+foreach ($catalog['body']['products'] as $listed) {
+    $productsById[$listed['id']] = $listed;
+}
+check(($productsById[$widget['id']]['stockQty'] ?? null) === 48, 'Stock is not the sum of the movements (50 bought - 2 sold): ' . json_encode($productsById[$widget['id']] ?? null));
+check(($productsById[$cancelledWidget['id']]['stockQty'] ?? null) === 0, 'A cancelled sale did not put its stock back (-2 + 2).');
+check(($productsById[$gadget['id']]['stockQty'] ?? null) === -1, 'Stock with only a sale recorded should be -1.');
+check(($productsById[$gadget['id']]['name'] ?? '') === 'Gadget Renamed', 'The newest version did not win: ' . json_encode($productsById[$gadget['id']] ?? null));
+check(!isset($productsById[$deletedWidget['id']]), 'A deleted product was listed.');
+check(($productsById[$widget['id']]['retailPriceCents'] ?? null) === $widget['retailPriceCents'] && ($productsById[$widget['id']]['costPriceCents'] ?? null) === $widget['costPriceCents'], 'A product price was not carried over.');
+$cashierListed = false;
+foreach ($catalog['body']['users'] as $listedUser) {
+    $cashierListed = $cashierListed || ($listedUser['id'] === $cashScenario['context']['cashierId'] && $listedUser['passwordHash'] !== '');
+}
+check($cashierListed, 'The cashier was not listed with a password hash to check a login against.');
+check((int) $catalog['body']['cursor'] === (int) $pdo->query('SELECT MAX(id) FROM sync_changes WHERE shop_id = (SELECT shop_id FROM clients WHERE device_id = \'lite-till-device\')')->fetchColumn(), 'The catalog cursor is not the newest sync id.');
+check(array_key_exists('license', $catalog['body']) && array_key_exists('server_time', $catalog['body']), 'The licence view and server time are missing.');
 echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied.\n";
 echo "Platform integration tests passed.\n";
 

@@ -17,6 +17,7 @@ use Platform\Core\Auth;
 use Platform\Core\Database;
 use Platform\Core\InviteCode;
 use Platform\Services\PaystackClient;
+use Platform\Services\LiteCatalog;
 use Platform\Services\SyncGuard;
 use Platform\Services\SyncGuardViolation;
 use Platform\Services\PaymentReconciler;
@@ -1783,6 +1784,23 @@ if ($action === 'pull_sync_snapshot' && $method === 'GET') {
     $snapshot = SyncSnapshot::page($pdo, $client, (string) ($_GET['snapshot_id'] ?? ''), max(0, (int) ($_GET['after'] ?? 0)));
     if ($snapshot === null) jsonResponse(['success' => false, 'message' => 'Initial sync snapshot expired. Retry to resume with a fresh snapshot.'], 410);
     jsonResponse(['success' => true] + $snapshot);
+}
+
+// The shop as the lite till (plain JavaScript on an old iPad) needs it: current products with their
+// stock added up, categories, cashiers - worked out here by the app's own rules (see LiteCatalog)
+// instead of making the iPad pull and merge the shop's whole sync history.
+if ($action === 'lite_catalog' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    if ($client['channel'] !== 'lite') {
+        jsonResponse(['success' => false, 'message' => 'The shop catalog view is only for lite tills.'], 403);
+    }
+    jsonResponse(array_merge([
+        'success' => true,
+        'shop_id' => (int) $client['shop_id'],
+        'device_id' => (string) $client['device_id'],
+        'license' => shopLicenseView($client),
+        'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
+    ], LiteCatalog::build($pdo, (int) $client['shop_id'])));
 }
 
 if ($action === 'pull_changes' && $method === 'GET') {

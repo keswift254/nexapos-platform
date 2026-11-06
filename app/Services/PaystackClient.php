@@ -52,7 +52,49 @@ class PaystackClient
         ]);
     }
 
-    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false): array
+    /**
+     * Where Paystack sends the customer's browser after the payment page.
+     * Native apps bounce into a nexapos:// link; the web POS (which runs in a
+     * browser tab or an iPhone Home Screen app) gets a small page that hands the
+     * customer back to the running web app. Both are fixed here - a client only
+     * chooses between them, it never supplies a URL.
+     */
+    public const NATIVE_RETURN_URL = 'https://keswift254.github.io/nexapos-site/checkout-return.html';
+    public const WEB_RETURN_URL = 'https://nexapos.cc/payment-return.html';
+
+    /** Not a mailbox: the domain only has to look like one to Paystack. */
+    public const CUSTOMER_EMAIL_DOMAIN = 'customers.nexapos.cc';
+
+    /**
+     * The email address Paystack is given for a payment.
+     *
+     * Paystack's fraud checks treat one email as one customer and block a business that sends
+     * the same address for every payment, which is what a shop's shared default email did. So
+     * the address is never the shop's own: it is one per customer when the customer's phone
+     * number is known (the same person always gets the same address), otherwise one per
+     * payment. Paystack accepts either. The address has no mailbox behind it - the receipt
+     * Paystack would email simply has nowhere to go.
+     */
+    public static function customerEmail(int $shopId, string $reference, string $phone = ''): string
+    {
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        if (strlen($digits) === 10 && $digits[0] === '0') {
+            $digits = '254' . substr($digits, 1);
+        } elseif (strlen($digits) === 9 && in_array($digits[0], ['1', '7'], true)) {
+            $digits = '254' . $digits;
+        }
+        if (strlen($digits) >= 9 && strlen($digits) <= 15) {
+            return $digits . '@' . self::CUSTOMER_EMAIL_DOMAIN;
+        }
+
+        // Unique per shop and reference, readable, and short enough for the local part (max 64).
+        $slug = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower($reference)) ?? '', '-');
+        $slug = substr($slug, 0, 40);
+        return ($slug === '' ? '' : $slug . '-') . substr(sha1($shopId . '|' . $reference), 0, 10)
+            . '@' . self::CUSTOMER_EMAIL_DOMAIN;
+    }
+
+    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false, bool $returnToWeb = false): array
     {
         $payload = [
             'email' => $email,
@@ -64,8 +106,10 @@ class PaystackClient
             'bearer' => 'subaccount',
             'metadata' => $metadata,
         ];
-        if ($returnToApp) {
-            $payload['callback_url'] = 'https://keswift254.github.io/nexapos-site/checkout-return.html';
+        if ($returnToWeb) {
+            $payload['callback_url'] = self::WEB_RETURN_URL;
+        } elseif ($returnToApp) {
+            $payload['callback_url'] = self::NATIVE_RETURN_URL;
         }
         return $this->request('POST', '/transaction/initialize', $payload);
     }

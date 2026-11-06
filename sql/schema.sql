@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS clients (
     -- casual/accidental exposure, not a determined attacker willing to
     -- rebuild the web client - an accepted, deliberate trade-off, see
     -- the browser-POS plan.
-    channel ENUM('native', 'browser') NOT NULL DEFAULT 'native',
+    channel ENUM('native', 'browser', 'lite') NOT NULL DEFAULT 'native',
     shop_id INT NOT NULL,
     -- Client-scoped, unlike settlement above: only means "still within
     -- its 10-min re-registration grace window" or "admin-disabled" - not

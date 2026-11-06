@@ -626,6 +626,123 @@ check($adminSupportThread($ticketId)['body']['ticket']['status'] === 'closed', '
 
 check($adminSupportThread(999999999)['status'] === 404, 'admin_support_thread did not 404 for a non-existent ticket.');
 
+// ---- The old-iPad "lite" till: a joined device whose every push is vetted by the sync guard ---------------
+// The records come from the real app's own tests (tests/fixtures/sync_guard), re-stamped as this lite device.
+$guardFixture = json_decode((string) file_get_contents(__DIR__ . '/../fixtures/sync_guard/sale_scenarios.json'), true, 512, JSON_THROW_ON_ERROR);
+$liteOwner = register($baseUrl, 'lite-shop-native-owner', 'native');
+$liteTill = register($baseUrl, 'lite-till-device', 'lite');
+check($liteOwner['status'] === 201 && $liteTill['status'] === 201, 'Could not register the lite till fixtures: ' . $liteOwner['raw'] . $liteTill['raw']);
+$liteOwnerAuth = ['Authorization: Bearer ' . $liteOwner['body']['api_key']];
+$liteAuth = ['Authorization: Bearer ' . $liteTill['body']['api_key']];
+$liteInvite = request($baseUrl, 'generate_invite', 'POST', [], $liteOwnerAuth);
+check($liteInvite['status'] === 200, 'Could not invite the lite till.');
+check(request($baseUrl, 'join_shop', 'POST', ['invite_code' => $liteInvite['body']['code']], $liteAuth)['status'] === 200, 'The lite till could not join the shop.');
+check($pdo->query("SELECT channel FROM clients WHERE device_id = 'lite-till-device'")->fetchColumn() === 'lite', 'The till was not stamped as a lite device.');
+
+// Like a real shop: the main (native) device holds the products and the cashier.
+$nativeRevision = 0;
+$contextChanges = [];
+foreach ($guardFixture['scenarios'] as $scenario) {
+    foreach (['users', 'products'] as $table) {
+        foreach ($scenario['context'][$table] as $row) {
+            $row['createdByDeviceId'] = 'lite-shop-native-owner';
+            $row['localRev'] = ++$nativeRevision;
+            $contextChanges[] = ['table_name' => $table, 'row_id' => $row['id'], 'local_rev' => $row['localRev'], 'updated_at' => $row['updatedAt'], 'payload' => $row];
+        }
+    }
+}
+$shopSetup = request($baseUrl, 'push_changes', 'POST', ['changes' => $contextChanges], $liteOwnerAuth);
+check($shopSetup['status'] === 200, 'Could not give the shop its products and cashiers: ' . $shopSetup['raw']);
+
+$liteRevision = 0;
+$asLite = static function (array $changes) use (&$liteRevision): array {
+    $out = [];
+    foreach ($changes as $change) {
+        $payload = $change['payload'];
+        $payload['createdByDeviceId'] = 'lite-till-device';
+        $payload['localRev'] = ++$liteRevision;
+        $out[] = ['table_name' => $change['table_name'], 'row_id' => $payload['id'], 'local_rev' => $liteRevision, 'updated_at' => $payload['updatedAt'], 'payload' => $payload];
+    }
+    return $out;
+};
+$litePush = static fn (array $changes): array => request($baseUrl, 'push_changes', 'POST', ['changes' => $changes], $liteAuth);
+$liteStored = static fn (): int => (int) $pdo->query("SELECT COUNT(*) FROM sync_changes WHERE device_id = 'lite-till-device'")->fetchColumn();
+
+$cashScenario = null;
+foreach ($guardFixture['scenarios'] as $scenario) {
+    if ($scenario['name'] === 'cash_sale_two_lines') {
+        $cashScenario = $scenario;
+    }
+}
+$cashChanges = $cashScenario['stages'][0]['changes'];
+
+// A tampered sale (the total does not add up) is refused, and NOTHING of it is stored.
+$tampered = $cashChanges;
+$tampered[0]['payload']['totalCents'] += 1;
+$before = $liteStored();
+$refused = $litePush($asLite($tampered));
+check($refused['status'] === 422 && str_contains((string) ($refused['body']['message'] ?? ''), 'do not add up'), 'A tampered sale was not refused: ' . $refused['raw']);
+check($liteStored() === $before, 'Part of a refused sale was stored.');
+// A till may not write products (or anything but sales).
+$productWrite = $litePush($asLite([['table_name' => 'products', 'payload' => $guardFixture['scenarios'][0]['context']['products'][0]]]));
+check($productWrite['status'] === 422 && str_contains((string) ($productWrite['body']['message'] ?? ''), "may not write to 'products'"), 'A lite till wrote a product: ' . $productWrite['raw']);
+check($liteStored() === $before, 'A refused product write was stored.');
+
+// The real sale is accepted; sending the very same push again (a lost reply) is harmless.
+$goodBatch = $asLite($cashChanges);
+check($litePush($goodBatch)['status'] === 200, 'A real cash sale was refused: ' . $litePush($goodBatch)['raw']);
+check($liteStored() === $before + count($goodBatch), 'The cash sale was not stored in full.');
+check($litePush($goodBatch)['status'] === 200 && $liteStored() === $before + count($goodBatch), 'Re-sending a recorded sale was not harmless.');
+// The same revision with different content is still refused (the normal duplicate rule).
+$altered = $goodBatch;
+$altered[0]['payload']['customerName'] = 'Someone else';
+check($litePush($altered)['status'] === 422, 'A recorded revision was accepted with different content.');
+
+// Every kind of sale the app can make is accepted, including an online payment moving on to paid / cancelled.
+foreach ($guardFixture['scenarios'] as $scenario) {
+    if ($scenario['name'] === 'cash_sale_two_lines') {
+        continue;
+    }
+    foreach ($scenario['stages'] as $stage) {
+        $push = $litePush($asLite($stage['changes']));
+        check($push['status'] === 200, "Lite sale '{$scenario['name']}' stage {$stage['stage']} was refused: " . $push['raw']);
+    }
+}
+// An existing sale cannot be rewritten afterwards (a paid online sale cannot be pushed back to pending).
+$paidScenario = null;
+foreach ($guardFixture['scenarios'] as $scenario) {
+    if ($scenario['name'] === 'paystack_pending_then_paid') {
+        $paidScenario = $scenario;
+    }
+}
+$rewrite = $paidScenario['stages'][1]['changes'];
+$rewrite[0]['payload']['status'] = 'pending';
+check($litePush($asLite($rewrite))['status'] === 422, 'A paid sale was sent back to pending.');
+
+// A lite device gets the browser restrictions: no settlement or payout data, no LAN keys.
+check(request($baseUrl, 'list_banks', 'GET', null, $liteAuth)['status'] === 403, 'A lite till could list banks.');
+check(request($baseUrl, 'report_shop_license', 'POST', ['state' => 'active'], $liteAuth)['status'] === 403, 'A lite till reported the shop license.');
+// The restrictions must hold even for a lite device that OWNS its shop (one that registers without an
+// invite does) - there, the channel is the only thing standing in the way.
+$liteStandalone = register($baseUrl, 'lite-standalone-owner', 'lite');
+check($liteStandalone['status'] === 201, 'Could not register a standalone lite till.');
+$liteStandaloneAuth = ['Authorization: Bearer ' . $liteStandalone['body']['api_key']];
+$pdo->prepare("UPDATE shops SET business_name = 'Lite Control', subaccount_code = 'SUB_LITE', is_verified = 1 WHERE id = (SELECT shop_id FROM clients WHERE device_id = 'lite-standalone-owner')")->execute();
+check(request($baseUrl, 'list_banks', 'GET', null, $liteStandaloneAuth)['status'] === 403, 'A lite till that owns its shop could list banks.');
+check(request($baseUrl, 'save_settlement_details', 'POST', ['business_name' => 'x', 'settlement_type' => 'mpesa', 'bank_code' => 'MPESA', 'account_number' => '0700000000'], $liteStandaloneAuth)['status'] === 403, 'A lite till that owns its shop could change payout details.');
+check(request($baseUrl, 'report_shop_license', 'POST', ['state' => 'active'], $liteStandaloneAuth)['status'] === 403, 'A lite till that owns its shop reported the license.');
+$ownerStatus = request($baseUrl, 'client_status', 'GET', null, $liteStandaloneAuth);
+check($ownerStatus['status'] === 200 && $ownerStatus['body']['business_name'] === null && $ownerStatus['body']['subaccount_code'] === null, 'A lite till that owns its shop was shown payout details: ' . $ownerStatus['raw']);
+check(request($baseUrl, 'lan_sync_credentials', 'GET', null, $liteAuth)['status'] === 403, 'A lite till was given LAN credentials.');
+check(request($baseUrl, 'save_settlement_details', 'POST', ['business_name' => 'x', 'settlement_type' => 'mpesa', 'bank_code' => 'MPESA', 'account_number' => '0700000000'], $liteAuth)['status'] === 403, 'A lite till could change payout details.');
+$liteStatus = request($baseUrl, 'client_status', 'GET', null, $liteAuth);
+check($liteStatus['status'] === 200 && array_key_exists('subaccount_code', $liteStatus['body']) && $liteStatus['body']['subaccount_code'] === null, 'A lite till was shown payout details: ' . $liteStatus['raw']);
+
+// The full app (native) is NOT held to the guard: it can still write anything, as before.
+$nativeStamp = gmdate('Y-m-d\TH:i:s') . '.500000Z';
+$nativeRow = ['id' => 'native-still-free', 'localRev' => ++$nativeRevision, 'updatedAt' => $nativeStamp, 'createdByDeviceId' => 'lite-shop-native-owner', 'name' => 'Anything'];
+check(request($baseUrl, 'push_changes', 'POST', ['changes' => [['table_name' => 'categories', 'row_id' => 'native-still-free', 'local_rev' => $nativeRevision, 'updated_at' => $nativeStamp, 'payload' => $nativeRow]]], $liteOwnerAuth)['status'] === 200, 'The sync guard got in the way of a normal device.');
+echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied.\n";
 echo "Platform integration tests passed.\n";
 
 // Photos are private, validated, and attached to the same message transaction.

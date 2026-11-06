@@ -2001,8 +2001,18 @@ if ($action === 'initialize_transaction' && $method === 'POST') {
     $metadata = ['client_id' => $client['id'], 'device_label' => $client['device_label'], 'source' => 'NexaPOS'];
 
     // $email is the shop's shared default (every app sends it). Paystack blocks a business that
-    // sends one address for all its payments, so it is replaced by a per-customer / per-payment one.
-    $paystackEmail = PaystackClient::customerEmail((int) $client['shop_id'], $reference, trim((string) ($body['customer_phone'] ?? '')));
+    // sends one address for all its payments, so it is replaced by a per-customer / per-payment one:
+    // s<shop>-<this shop's running payment number>. The number is only a label - if the count
+    // cannot be read it is derived from the reference instead, and it never stops a payment.
+    try {
+        $countStmt = $pdo->prepare('SELECT COUNT(*) FROM transactions t JOIN clients c ON c.id = t.client_id WHERE c.shop_id = ?');
+        $countStmt->execute([(int) $client['shop_id']]);
+        $paymentNumber = (int) $countStmt->fetchColumn() + 1;
+    } catch (\Throwable $e) {
+        error_log('[nexapos_platform] Could not count the shop\'s payments: ' . $e->getMessage());
+        $paymentNumber = crc32($reference) % 1000000;
+    }
+    $paystackEmail = PaystackClient::customerEmail((int) $client['shop_id'], $paymentNumber, trim((string) ($body['customer_phone'] ?? '')));
 
     try {
         $result = (new PaystackClient())->initializeTransaction($amount, $reference, $paystackEmail, $currency, $client['subaccount_code'], $metadata, ($body['return_to_app'] ?? false) === true, ($body['return_to'] ?? '') === 'web');

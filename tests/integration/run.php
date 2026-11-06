@@ -468,6 +468,10 @@ check(($plainInit['body']['data']['email'] ?? '') !== 'buyer@example.com'
     'The shop\'s shared email still reached Paystack: ' . $plainInit['raw']);
 check(($plainInit['body']['data']['email'] ?? '') !== ($nativeInit['body']['data']['email'] ?? ''),
     'Two payments were given the same email.');
+// Short and readable: s<shop>-<running number>, and the number counts up with each payment.
+$parseNumber = static fn (array $response): ?int => preg_match('/^s\d+-(\d{4,})@nexapos\.cc$/', (string) ($response['body']['data']['email'] ?? ''), $m) === 1 ? (int) $m[1] : null;
+check($parseNumber($plainInit) !== null && $parseNumber($nativeInit) === $parseNumber($plainInit) + 1 && $parseNumber($webInit) === $parseNumber($nativeInit) + 1,
+    'The per-payment email is not s<shop>-<running number>, counting up: ' . json_encode([$plainInit['body']['data']['email'] ?? null, $nativeInit['body']['data']['email'] ?? null, $webInit['body']['data']['email'] ?? null]));
 $phoneInit = $initializeAs(['customer_phone' => '0712 345 678']);
 $phoneInitAgain = $initializeAs(['customer_phone' => '+254712345678']);
 check(($phoneInit['body']['data']['email'] ?? '') === '254712345678@nexapos.cc'

@@ -72,10 +72,11 @@ class PaystackClient
      * the same address for every payment, which is what a shop's shared default email did. So
      * the address is never the shop's own: it is one per customer when the customer's phone
      * number is known (the same person always gets the same address), otherwise one per
-     * payment. Paystack accepts either. The address has no mailbox behind it - the receipt
-     * Paystack would email simply has nowhere to go.
+     * payment - s<shop>-<this shop's running payment number>, such as s7-0042. Paystack
+     * accepts either. The address has no mailbox behind it - the receipt Paystack would
+     * email simply has nowhere to go.
      */
-    public static function customerEmail(int $shopId, string $reference, string $phone = ''): string
+    public static function customerEmail(int $shopId, int $sequence, string $phone = ''): string
     {
         $digits = preg_replace('/\D+/', '', $phone) ?? '';
         if (strlen($digits) === 10 && $digits[0] === '0') {
@@ -87,11 +88,7 @@ class PaystackClient
             return $digits . '@' . self::CUSTOMER_EMAIL_DOMAIN;
         }
 
-        // Unique per shop and reference, readable, and short enough for the local part (max 64).
-        $slug = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower($reference)) ?? '', '-');
-        $slug = substr($slug, 0, 40);
-        return ($slug === '' ? '' : $slug . '-') . substr(sha1($shopId . '|' . $reference), 0, 10)
-            . '@' . self::CUSTOMER_EMAIL_DOMAIN;
+        return sprintf('s%d-%04d@%s', max(0, $shopId), max(0, $sequence), self::CUSTOMER_EMAIL_DOMAIN);
     }
 
     public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false, bool $returnToWeb = false): array

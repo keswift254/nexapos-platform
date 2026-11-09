@@ -2074,7 +2074,7 @@ if ($action === 'initialize_transaction' && $method === 'POST') {
     $paystackEmail = PaystackClient::customerEmail((int) $client['shop_id'], $paymentNumber, trim((string) ($body['customer_phone'] ?? '')));
 
     try {
-        $result = (new PaystackClient())->initializeTransaction($amount, $reference, $paystackEmail, $currency, $client['subaccount_code'], $metadata, ($body['return_to_app'] ?? false) === true, ($body['return_to'] ?? '') === 'web');
+        $result = (new PaystackClient())->initializeTransaction($amount, $reference, $paystackEmail, $currency, $client['subaccount_code'], $metadata, ($body['return_to_app'] ?? false) === true, ($body['return_to'] ?? '') === 'web', ($body['return_to'] ?? '') === 'lite');
     } catch (\Throwable $e) {
         jsonResponse(['status' => false, 'message' => 'Could not reach Paystack: ' . $e->getMessage()], 502);
     }

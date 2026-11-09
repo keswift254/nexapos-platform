@@ -61,6 +61,8 @@ class PaystackClient
      */
     public const NATIVE_RETURN_URL = 'https://keswift254.github.io/nexapos-site/checkout-return.html';
     public const WEB_RETURN_URL = 'https://nexapos.cc/payment-return.html';
+    /** The Lite till (old iPads): a plain "thank you" page, safe to open on the customer's own phone, with a link back to the till. */
+    public const LITE_RETURN_URL = 'https://nexapos.cc/lite/paid.html';
 
     /** The platform's own domain. The part before the @ is made up, so no mailbox exists for it: keep the domain's default (catch-all) mail address set to reject, or every receipt Paystack sends lands there. */
     public const CUSTOMER_EMAIL_DOMAIN = 'nexapos.cc';
@@ -91,7 +93,7 @@ class PaystackClient
         return sprintf('s%d-%04d@%s', max(0, $shopId), max(0, $sequence), self::CUSTOMER_EMAIL_DOMAIN);
     }
 
-    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false, bool $returnToWeb = false): array
+    public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false, bool $returnToWeb = false, bool $returnToLite = false): array
     {
         $payload = [
             'email' => $email,
@@ -103,7 +105,9 @@ class PaystackClient
             'bearer' => 'subaccount',
             'metadata' => $metadata,
         ];
-        if ($returnToWeb) {
+        if ($returnToLite) {
+            $payload['callback_url'] = self::LITE_RETURN_URL;
+        } elseif ($returnToWeb) {
             $payload['callback_url'] = self::WEB_RETURN_URL;
         } elseif ($returnToApp) {
             $payload['callback_url'] = self::NATIVE_RETURN_URL;

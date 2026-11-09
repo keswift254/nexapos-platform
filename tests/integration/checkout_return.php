@@ -12,17 +12,20 @@ if ($config['paystack_api_base'] !== 'http://127.0.0.1:18089' || $config['paysta
     throw new RuntimeException('Tests require the local fake Paystack configuration.');
 }
 $client = new Platform\Services\PaystackClient();
-// [returnToApp, returnToWeb, expected callback_url or null for none]
+// [returnToApp, returnToWeb, returnToLite, expected callback_url or null for none]
 $cases = [
-    [false, false, null],
-    [true, false, 'https://keswift254.github.io/nexapos-site/checkout-return.html'],
-    [false, true, 'https://nexapos.cc/payment-return.html'],
+    [false, false, false, null],
+    [true, false, false, 'https://keswift254.github.io/nexapos-site/checkout-return.html'],
+    [false, true, false, 'https://nexapos.cc/payment-return.html'],
     // If a client ever sent both, the browser must still come back to the browser.
-    [true, true, 'https://nexapos.cc/payment-return.html'],
+    [true, true, false, 'https://nexapos.cc/payment-return.html'],
+    // The Lite till has its own plain page, whatever else was asked.
+    [false, false, true, 'https://nexapos.cc/lite/paid.html'],
+    [true, true, true, 'https://nexapos.cc/lite/paid.html'],
 ];
-foreach ($cases as [$returnToApp, $returnToWeb, $expectedCallback]) {
-    $label = 'app=' . var_export($returnToApp, true) . ' web=' . var_export($returnToWeb, true);
-    $response = $client->initializeTransaction(1234, 'TEST-CALLBACK', 'test@example.com', 'KES', 'ACCT_TEST', ['source' => 'test'], $returnToApp, $returnToWeb);
+foreach ($cases as [$returnToApp, $returnToWeb, $returnToLite, $expectedCallback]) {
+    $label = 'app=' . var_export($returnToApp, true) . ' web=' . var_export($returnToWeb, true) . ' lite=' . var_export($returnToLite, true);
+    $response = $client->initializeTransaction(1234, 'TEST-CALLBACK', 'test@example.com', 'KES', 'ACCT_TEST', ['source' => 'test'], $returnToApp, $returnToWeb, $returnToLite);
     $payload = $response['body']['data'];
     if (($payload['transaction_charge'] ?? -1) !== 0 || ($payload['bearer'] ?? '') !== 'subaccount') {
         throw new RuntimeException("Merchant payments must have zero platform commission ($label).");

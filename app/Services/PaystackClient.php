@@ -93,6 +93,47 @@ class PaystackClient
         return sprintf('s%d-%04d@%s', max(0, $shopId), max(0, $sequence), self::CUSTOMER_EMAIL_DOMAIN);
     }
 
+    /**
+     * A Kenyan mobile number the way Paystack wants it for M-Pesa (+2547XXXXXXXX or +2541XXXXXXXX), from
+     * what a cashier types (0712 345 678, 712345678, 254712345678, +254 712-345-678). Null when it is not one,
+     * so nothing is ever sent to a number that is not a Kenyan mobile.
+     */
+    public static function mpesaPhone(string $phone): ?string
+    {
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        if (strlen($digits) === 10 && $digits[0] === '0') {
+            $digits = '254' . substr($digits, 1);
+        } elseif (strlen($digits) === 9) {
+            $digits = '254' . $digits;
+        }
+        if (strlen($digits) !== 12 || strncmp($digits, '254', 3) !== 0 || !in_array($digits[3], ['1', '7'], true)) {
+            return null;
+        }
+
+        return '+' . $digits;
+    }
+
+    /**
+     * Sends the customer an M-Pesa PIN prompt (STK push) for a payment - no payment page. Same payout rules as
+     * initializeTransaction (the shop's subaccount bears the charges, no platform commission). Paystack answers
+     * "pay_offline" and the customer approves on their phone within about 3 minutes; the result is read with
+     * verifyTransaction by the same reference.
+     */
+    public function chargeMpesa(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, string $phone): array
+    {
+        return $this->request('POST', '/charge', [
+            'email' => $email,
+            'amount' => $amountMinor,
+            'currency' => $currency,
+            'reference' => $reference,
+            'subaccount' => $subaccountCode,
+            'transaction_charge' => 0,
+            'bearer' => 'subaccount',
+            'metadata' => $metadata,
+            'mobile_money' => ['phone' => $phone, 'provider' => 'mpesa'],
+        ]);
+    }
+
     public function initializeTransaction(int $amountMinor, string $reference, string $email, string $currency, string $subaccountCode, array $metadata, bool $returnToApp = false, bool $returnToWeb = false, bool $returnToLite = false): array
     {
         $payload = [

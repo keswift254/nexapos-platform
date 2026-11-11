@@ -3,6 +3,7 @@
 // It remembers every initialised payment by reference and answers verification from what the test tells it:
 //   POST /transaction/initialize          -> stores the request, returns a payment link (like Paystack)
 //   GET  /transaction/verify/<reference>  -> the stored status (ongoing until the test changes it), amount, currency
+//   POST /charge                          -> an M-Pesa prompt: stored like a payment, answers pay_offline (see below)
 //   GET  /__control/set?reference=..&status=success|abandoned|failed|ongoing[&amount=..][&currency=..]
 //   GET  /__control/get?reference=..      -> what the platform sent Paystack (email, callback_url, amount, ...)
 // For trying the iPad's "pay on this iPad" round trip in a browser, start it with FAKE_PAYSTACK_PUBLIC_BASE (this
@@ -44,6 +45,44 @@ if ($path === '/transaction/initialize' && $_SERVER['REQUEST_METHOD'] === 'POST'
             : 'https://checkout.paystack.com/fake-' . substr(md5($reference), 0, 10)),
         'access_code' => 'fake-' . substr(md5($reference), 0, 10),
         'reference' => $reference,
+    ]]);
+    return;
+}
+
+// M-Pesa prompt (Paystack's Create Charge with mobile_money). Checks what the Paystack docs require; +254700000000
+// is refused by "Paystack" outright, +254711000000 is accepted but answers "failed" (both send no prompt).
+if ($path === '/charge' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $request = json_decode((string) file_get_contents('php://input'), true);
+    $reference = is_array($request) ? (string) ($request['reference'] ?? '') : '';
+    $phone = is_array($request) ? (string) ($request['mobile_money']['phone'] ?? '') : '';
+    $provider = is_array($request) ? (string) ($request['mobile_money']['provider'] ?? '') : '';
+    if ($reference === '' || !isset($request['amount'], $request['email'])
+        || $provider !== 'mpesa' || preg_match('/^\+254[17]\d{8}$/', $phone) !== 1
+        || ($request['currency'] ?? '') !== 'KES') {
+        http_response_code(400);
+        echo json_encode(['status' => false, 'message' => 'Invalid charge request']);
+        return;
+    }
+    if ($phone === '+254700000000') {
+        http_response_code(400);
+        echo json_encode(['status' => false, 'message' => 'Invalid mobile number']);
+        return;
+    }
+    if (isset($state[$reference])) {
+        http_response_code(400);
+        echo json_encode(['status' => false, 'message' => 'Duplicate Transaction Reference']);
+        return;
+    }
+    $state[$reference] = ['request' => $request, 'status' => 'ongoing', 'amount' => (int) $request['amount'], 'currency' => 'KES'];
+    $save();
+    if ($phone === '+254711000000') {
+        echo json_encode(['status' => true, 'message' => 'Charge attempted', 'data' => ['reference' => $reference, 'status' => 'failed', 'message' => 'The number could not be reached']]);
+        return;
+    }
+    echo json_encode(['status' => true, 'message' => 'Charge attempted', 'data' => [
+        'reference' => $reference,
+        'status' => 'pay_offline',
+        'display_text' => 'Please complete authorization process on your mobile phone',
     ]]);
     return;
 }

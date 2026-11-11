@@ -76,3 +76,30 @@ if ($email(7, 42) !== $email(7, 42)) {
     throw new RuntimeException('The same payment must always give the same address.');
 }
 echo "Customer email tests passed; short, valid, and never shared.\n";
+// A Kenyan mobile number as Paystack wants it for an M-Pesa prompt: cleaned from what a cashier types, and never
+// anything that is not a Kenyan mobile.
+$phoneCases = [
+    ['0712 345 678', '+254712345678'],
+    ['0712345678', '+254712345678'],
+    ['712345678', '+254712345678'],
+    ['254712345678', '+254712345678'],
+    ['+254 712-345-678', '+254712345678'],
+    ['(0112) 345 678', '+254112345678'],
+    ['0112345678', '+254112345678'],
+    // Not Kenyan mobiles: nothing may be sent to these.
+    ['', null],
+    ['12345', null],
+    ['0212345678', null],       // a landline-style 02 number
+    ['0612345678', null],
+    ['+255712345678', null],    // Tanzania
+    ['+2547123456789', null],   // one digit too many
+    ['07123456', null],         // one digit too few
+    ['abcdefghij', null],
+];
+foreach ($phoneCases as [$typed, $expected]) {
+    $got = Platform\Services\PaystackClient::mpesaPhone($typed);
+    if ($got !== $expected) {
+        throw new RuntimeException("mpesaPhone('$typed') gave " . var_export($got, true) . ', expected ' . var_export($expected, true));
+    }
+}
+echo "M-Pesa phone number tests passed; only Kenyan mobiles are accepted, always as +254...\n";

@@ -2103,6 +2103,87 @@ if ($action === 'initialize_transaction' && $method === 'POST') {
     jsonResponse($result['body'], $result['http_code']);
 }
 
+/**
+ * "Send an M-Pesa prompt": charges a customer's phone directly (STK push), for devices whose browser cannot open
+ * Paystack's payment page (the old iPad's Lite till). Same rules as initialize_transaction - the shop's payout
+ * account is required, the amount is bounded, the sale's own number is the reference, Paystack sees a per-payment
+ * email - plus a Kenyan mobile number, KES only, and a limit on how many prompts one device can send.
+ * The result is read afterwards with verify_transaction by the same reference.
+ */
+if ($action === 'charge_mobile_money' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    if (empty($client['subaccount_code'])) {
+        jsonResponse(['status' => false, 'message' => 'Complete payment settings before accepting Paystack payments.'], 422);
+    }
+
+    $body = requestBody();
+    $amount = (int) ($body['amount'] ?? 0);
+    $reference = trim((string) ($body['reference'] ?? ''));
+    $currency = trim((string) ($body['currency'] ?? '')) ?: 'KES';
+    $phone = PaystackClient::mpesaPhone((string) ($body['phone'] ?? ''));
+
+    if ($amount < 1 || $amount > 100_000_000 || $reference === '' || strlen($reference) > 60) {
+        jsonResponse(['status' => false, 'message' => 'amount and reference are required.'], 422);
+    }
+    if ($currency !== 'KES') {
+        jsonResponse(['status' => false, 'message' => 'M-Pesa prompts are only for payments in KES.'], 422);
+    }
+    if ($phone === null) {
+        jsonResponse(['status' => false, 'message' => 'Enter the customer\'s Kenyan mobile number, like 0712 345 678.'], 422);
+    }
+
+    // Not a way to spam a phone: at most 12 prompts per device in any 10 minutes.
+    try {
+        $recent = $pdo->prepare('SELECT COUNT(*) FROM transactions WHERE client_id = ? AND created_at > (NOW() - INTERVAL 10 MINUTE)');
+        $recent->execute([$client['id']]);
+        if ((int) $recent->fetchColumn() >= 12) {
+            jsonResponse(['status' => false, 'message' => 'Too many payment requests from this device. Wait a few minutes and try again.'], 429);
+        }
+    } catch (\Throwable $e) {
+        error_log('[nexapos_platform] Could not check the prompt limit: ' . $e->getMessage());
+    }
+
+    $metadata = ['client_id' => $client['id'], 'device_label' => $client['device_label'], 'source' => 'NexaPOS'];
+    try {
+        $countStmt = $pdo->prepare('SELECT COUNT(*) FROM transactions t JOIN clients c ON c.id = t.client_id WHERE c.shop_id = ?');
+        $countStmt->execute([(int) $client['shop_id']]);
+        $paymentNumber = (int) $countStmt->fetchColumn() + 1;
+    } catch (\Throwable $e) {
+        error_log('[nexapos_platform] Could not count the shop\'s payments: ' . $e->getMessage());
+        $paymentNumber = crc32($reference) % 1000000;
+    }
+    $paystackEmail = PaystackClient::customerEmail((int) $client['shop_id'], $paymentNumber, $phone);
+
+    try {
+        $result = (new PaystackClient())->chargeMpesa($amount, $reference, $paystackEmail, $currency, $client['subaccount_code'], $metadata, $phone);
+    } catch (\Throwable $e) {
+        jsonResponse(['status' => false, 'message' => 'Could not reach Paystack: ' . $e->getMessage()], 502);
+    }
+
+    // Only a prompt that really went out (or a payment already made) is kept; anything else sent nothing to the
+    // customer, so it is reported as a failure and nothing is recorded.
+    $accepted = ($result['body']['status'] ?? false) === true
+        && in_array((string) ($result['body']['data']['status'] ?? ''), ['pay_offline', 'pending', 'success'], true);
+    if (!$accepted) {
+        $why = trim((string) ($result['body']['data']['message'] ?? ($result['body']['message'] ?? '')));
+        jsonResponse(['status' => false, 'message' => 'The M-Pesa prompt could not be sent' . ($why !== '' ? ': ' . $why : '.')], $result['http_code'] >= 400 ? $result['http_code'] : 422);
+    }
+
+    try {
+        $insert = $pdo->prepare('
+            INSERT INTO transactions (client_id, reference, amount_minor, currency, subaccount_code)
+            VALUES (?, ?, ?, ?, ?)
+        ');
+        $insert->execute([$client['id'], $reference, $amount, $currency, $client['subaccount_code']]);
+    } catch (\Throwable $e) {
+        // Like initialize_transaction: the prompt is already with the customer, so losing the local record is
+        // logged rather than turned into an error.
+        error_log('[nexapos_platform] Could not record transaction (reference=' . $reference . '): ' . $e->getMessage());
+    }
+
+    jsonResponse($result['body'], $result['http_code']);
+}
+
 if ($action === 'verify_transaction' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
     $reference = trim((string) ($_GET['reference'] ?? ''));

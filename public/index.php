@@ -18,6 +18,7 @@ use Platform\Core\Database;
 use Platform\Core\InviteCode;
 use Platform\Services\PaystackClient;
 use Platform\Services\LiteCatalog;
+use Platform\Services\LiteReport;
 use Platform\Services\SyncGuard;
 use Platform\Services\SyncGuardViolation;
 use Platform\Services\PaymentReconciler;
@@ -1801,6 +1802,36 @@ if ($action === 'lite_catalog' && $method === 'GET') {
         'license' => shopLicenseView($client),
         'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
     ], LiteCatalog::build($pdo, (int) $client['shop_id'])));
+}
+
+// The shop's Reports for the lite till: sales, cash / M-Pesa received, expenses and profit over a period, added up across
+// EVERY device of the shop by the apps' own rules (see LiteReport). The till chooses the period in the iPad's own local
+// time and sends it as UTC instants (sales) and plain dates (expenses); this only compares.
+if ($action === 'lite_report' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    if ($client['channel'] !== 'lite') {
+        jsonResponse(['success' => false, 'message' => 'The shop report view is only for lite tills.'], 403);
+    }
+    $fromUtc = (string) ($_GET['from_utc'] ?? '');
+    $toUtc = (string) ($_GET['to_utc'] ?? '');
+    $fromDate = (string) ($_GET['from_date'] ?? '');
+    $toDate = (string) ($_GET['to_date'] ?? '');
+    $instant = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/';
+    $plainDate = '/^\d{4}-\d{2}-\d{2}$/';
+    if (!preg_match($instant, $fromUtc) || !preg_match($instant, $toUtc) || !preg_match($plainDate, $fromDate) || !preg_match($plainDate, $toDate)
+        || strtotime($fromUtc) === false || strtotime($toUtc) === false || strtotime($fromDate) === false || strtotime($toDate) === false) {
+        jsonResponse(['success' => false, 'message' => 'from_utc, to_utc (like 2026-11-12T00:00:00.000Z) and from_date, to_date (like 2026-11-12) are required.'], 422);
+    }
+    $days = (strtotime($toDate) - strtotime($fromDate)) / 86400;
+    if (strcmp($toUtc, $fromUtc) <= 0 || $days < 1 || $days > 400) {
+        jsonResponse(['success' => false, 'message' => 'The period must end after it starts and be at most 400 days.'], 422);
+    }
+    jsonResponse([
+        'success' => true,
+        'shop_id' => (int) $client['shop_id'],
+        'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
+        'report' => LiteReport::build($pdo, (int) $client['shop_id'], $fromUtc, $toUtc, $fromDate, $toDate),
+    ]);
 }
 
 if ($action === 'pull_changes' && $method === 'GET') {

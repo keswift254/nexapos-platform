@@ -797,7 +797,42 @@ foreach ($catalog['body']['users'] as $listedUser) {
 check($cashierListed, 'The cashier was not listed with a password hash to check a login against.');
 check((int) $catalog['body']['cursor'] === (int) $pdo->query('SELECT MAX(id) FROM sync_changes WHERE shop_id = (SELECT shop_id FROM clients WHERE device_id = \'lite-till-device\')')->fetchColumn(), 'The catalog cursor is not the newest sync id.');
 check(array_key_exists('license', $catalog['body']) && array_key_exists('server_time', $catalog['body']), 'The licence view and server time are missing.');
-echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied.\n";
+// ---- lite_report: the shop's Reports for the lite till ----------------------------------------------------------
+check(request($baseUrl, 'lite_report', 'GET', null, $liteOwnerAuth)['status'] === 403, 'A normal device was given the lite report.');
+check(request($baseUrl, 'lite_report', 'GET', null, [])['status'] === 401, 'The lite report was readable with no key.');
+// request() puts the whole action in one encoded parameter, so a report with a period needs its own small caller.
+$reportRequest = static function (array $query, array $headers) use ($baseUrl): array {
+    $ch = curl_init($baseUrl . '?' . http_build_query(array_merge(['action' => 'lite_report'], $query)));
+    curl_setopt_array($ch, [CURLOPT_HTTPHEADER => array_merge(['Accept: application/json'], $headers), CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20]);
+    $raw = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['status' => $status, 'body' => json_decode((string) $raw, true), 'raw' => $raw];
+};
+$goodRange = ['from_utc' => '2000-01-01T00:00:00.000Z', 'to_utc' => '2100-01-01T00:00:00.000Z', 'from_date' => '2026-01-01', 'to_date' => '2026-01-31'];
+foreach ([[], array_merge($goodRange, ['from_utc' => 'yesterday']), array_merge($goodRange, ['to_date' => '31/01/2026']), array_merge($goodRange, ['to_utc' => '1999-01-01T00:00:00.000Z']),
+          array_merge($goodRange, ['to_date' => '2026-01-01']), array_merge($goodRange, ['to_date' => '2028-01-01'])] as $badQuery) {
+    check($reportRequest($badQuery, $liteAuth)['status'] === 422, 'A bad report period was accepted: ' . json_encode($badQuery));
+}
+$report = $reportRequest($goodRange, $liteAuth);
+check($report['status'] === 200 && ($report['body']['success'] ?? false) === true, 'The lite report was not served: ' . $report['raw']);
+$figures = $report['body']['report'] ?? [];
+foreach (['salesTotalCents', 'transactionCount', 'cashReceivedCents', 'mpesaCents', 'expensesTotalCents', 'grossProfitCents', 'netProfitCents', 'grandTotalCents', 'sales', 'expenses'] as $key) {
+    check(array_key_exists($key, $figures), "The lite report has no $key.");
+}
+// The sales the lite till pushed above are paid sales of THIS shop: they are in the report, and only paid ones.
+$paidInDb = (int) $pdo->query("SELECT COUNT(DISTINCT row_id) FROM sync_changes WHERE shop_id = (SELECT shop_id FROM clients WHERE device_id = 'lite-till-device') AND table_name = 'sales'")->fetchColumn();
+check($figures['transactionCount'] >= 1 && $figures['transactionCount'] <= $paidInDb, 'The report counts ' . $figures['transactionCount'] . ' sales of ' . $paidInDb . ' recorded.');
+check($figures['salesTotalCents'] > 0, 'The report has no sales money.');
+check($figures['cashReceivedCents'] + $figures['mpesaCents'] <= $figures['salesTotalCents'], 'Cash plus M-Pesa is more than the sales total.');
+foreach ($figures['sales'] as $listed) {
+    check($listed['status'] === 'paid', 'A sale that is not paid was listed.');
+}
+check($figures['grandTotalCents'] === $figures['salesTotalCents'] - $figures['expensesTotalCents'], 'Grand total is not sales minus expenses.');
+// Another shop sees none of it.
+$strangerReport = $reportRequest($goodRange, $liteStandaloneAuth);
+check($strangerReport['status'] === 200 && $strangerReport['body']['report']['transactionCount'] === 0 && $strangerReport['body']['report']['salesTotalCents'] === 0, 'Another shop was shown this shop\'s sales: ' . $strangerReport['raw']);
+echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports served.\n";
 echo "Platform integration tests passed.\n";
 
 // Photos are private, validated, and attached to the same message transaction.

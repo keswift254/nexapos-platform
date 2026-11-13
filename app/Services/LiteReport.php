@@ -37,6 +37,66 @@ final class LiteReport
     /** @return array<string,mixed> */
     public static function build(PDO $pdo, int $shopId, string $fromUtc, string $toUtc, string $fromDate, string $toDate): array
     {
+        [$paid, $itemsBySale, $expenses, $names] = self::load($pdo, $shopId, $fromUtc, $toUtc, $fromDate, $toDate);
+
+        return self::aggregate($paid, $itemsBySale, $expenses, $names, $fromUtc, $toUtc, $fromDate, $toDate);
+    }
+
+    /**
+     * The dashboard's day-by-day figures: for each consecutive period [bounds[i], bounds[i+1]) (UTC instants, for sales) and
+     * [dates[i], dates[i+1]) (plain dates, for expenses) the sales total and count, gross profit, expenses and net profit
+     * - the numbers behind "Sales Today", "Net Profit Today" and the last-7-days chart. The whole span is read ONCE.
+     *
+     * @param list<string> $bounds ascending, at least 2
+     * @param list<string> $dates  one per bound
+     * @return list<array<string,mixed>>
+     */
+    public static function days(PDO $pdo, int $shopId, array $bounds, array $dates): array
+    {
+        $last = count($bounds) - 1;
+        [$paid, $itemsBySale, $expenses, $names] = self::load($pdo, $shopId, $bounds[0], $bounds[$last], $dates[0], $dates[$last]);
+
+        return self::buckets($paid, $itemsBySale, $expenses, $names, $bounds, $dates);
+    }
+
+    /**
+     * The per-period figures from records already resolved to their newest versions (pure, so it can be tested exactly).
+     *
+     * @param array<string,array<string,mixed>> $paidSales
+     * @param array<string,list<array<string,mixed>>> $itemsBySale
+     * @param array<string,array<string,mixed>> $expenses
+     * @param array<string,string> $userNames
+     * @param list<string> $bounds
+     * @param list<string> $dates
+     * @return list<array<string,mixed>>
+     */
+    public static function buckets(array $paidSales, array $itemsBySale, array $expenses, array $userNames, array $bounds, array $dates): array
+    {
+        $out = [];
+        for ($i = 0; $i + 1 < count($bounds); $i++) {
+            $part = self::aggregate($paidSales, $itemsBySale, $expenses, $userNames, $bounds[$i], $bounds[$i + 1], $dates[$i], $dates[$i + 1]);
+            $out[] = [
+                'fromUtc' => $bounds[$i],
+                'toUtc' => $bounds[$i + 1],
+                'fromDate' => $dates[$i],
+                'toDate' => $dates[$i + 1],
+                'salesTotalCents' => $part['salesTotalCents'],
+                'transactionCount' => $part['transactionCount'],
+                'grossProfitCents' => $part['grossProfitCents'],
+                'expensesTotalCents' => $part['expensesTotalCents'],
+                'netProfitCents' => $part['netProfitCents'],
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * The newest versions of what a period needs: its paid sales, their items, its expenses and the names of the users.
+     *
+     * @return array{0:array<string,array<string,mixed>>,1:array<string,list<array<string,mixed>>>,2:array<string,array<string,mixed>>,3:array<string,string>}
+     */
+    private static function load(PDO $pdo, int $shopId, string $fromUtc, string $toUtc, string $fromDate, string $toDate): array
+    {
         $cursorStmt = $pdo->prepare('SELECT COALESCE(MAX(id), 0) FROM sync_changes WHERE shop_id = ?');
         $cursorStmt->execute([$shopId]);
         $cursor = (int) $cursorStmt->fetchColumn();
@@ -73,7 +133,7 @@ final class LiteReport
             $names[(string) $id] = (string) ($user['name'] ?? '');
         }
 
-        return self::aggregate($paid, $itemsBySale, $expenses, $names, $fromUtc, $toUtc, $fromDate, $toDate);
+        return [$paid, $itemsBySale, $expenses, $names];
     }
 
     /**

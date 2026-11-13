@@ -156,6 +156,31 @@ $r = agg([], [], $manyExpenses);
 same([$r['expenseCount'], $r['expensesTotalCents'], count($r['expenses']), $r['expensesTruncated']], [501, 5010, 500, true], 'expenses: every one is added up, only 500 are listed, and it says so');
 same(agg([], [], ['x' => expense('x', '2026-11-12', 10)])['expensesTruncated'], false, 'a short expense list is not truncated');
 
+// ---- the dashboard's day-by-day figures --------------------------------------------------------------------------
+$dayBounds = ['2026-11-11T00:00:00.000Z', '2026-11-12T00:00:00.000Z', '2026-11-13T00:00:00.000Z'];
+$dayDates = ['2026-11-11', '2026-11-12', '2026-11-13'];
+$twoDays = LiteReport::buckets([
+    'a' => sale('a', ['createdAt' => '2026-11-11T10:00:00.000Z', 'totalCents' => 5000]),
+    'b' => sale('b', ['createdAt' => '2026-11-12T00:00:00.000Z', 'totalCents' => 7000]),
+    'c' => sale('c', ['createdAt' => '2026-11-12T23:59:59.999Z', 'totalCents' => 3000]),
+    'd' => sale('d', ['createdAt' => '2026-11-13T00:00:00.000Z', 'totalCents' => 99999]),
+], [
+    'a' => [item('a', 'X', 1, 2000)],
+    'b' => [item('b', 'X', 1, 1000)],
+], [
+    'e1' => expense('e1', '2026-11-11', 500),
+    'e2' => expense('e2', '2026-11-12', 700),
+    'e3' => expense('e3', '2026-11-13', 99999),
+], ['u1' => 'Wanjiru'], $dayBounds, $dayDates);
+same(count($twoDays), 2, 'two periods from three edges');
+same([$twoDays[0]['salesTotalCents'], $twoDays[0]['transactionCount'], $twoDays[0]['grossProfitCents'], $twoDays[0]['expensesTotalCents'], $twoDays[0]['netProfitCents']], [5000, 1, 3000, 500, 2500], 'dashboard: the first day');
+same([$twoDays[1]['salesTotalCents'], $twoDays[1]['transactionCount'], $twoDays[1]['grossProfitCents'], $twoDays[1]['expensesTotalCents'], $twoDays[1]['netProfitCents']], [10000, 2, 9000, 700, 8300], 'dashboard: the second day (a sale at its first instant counts, one at the next day\'s first instant does not)');
+same(array_keys($twoDays[0]), ['fromUtc', 'toUtc', 'fromDate', 'toDate', 'salesTotalCents', 'transactionCount', 'grossProfitCents', 'expensesTotalCents', 'netProfitCents'], 'dashboard: only the figures, no lists');
+same([$twoDays[1]['fromUtc'], $twoDays[1]['toUtc'], $twoDays[1]['fromDate'], $twoDays[1]['toDate']], ['2026-11-12T00:00:00.000Z', '2026-11-13T00:00:00.000Z', '2026-11-12', '2026-11-13'], 'dashboard: each period says which period it is');
+$quiet = LiteReport::buckets([], [], [], [], $dayBounds, $dayDates);
+same([$quiet[0]['salesTotalCents'], $quiet[0]['transactionCount'], $quiet[1]['expensesTotalCents'], $quiet[1]['netProfitCents']], [0, 0, 0, 0], 'dashboard: a quiet day is zeros');
+same(count(LiteReport::buckets([], [], [], [], ['2026-11-11T00:00:00.000Z'], ['2026-11-11'])), 0, 'dashboard: one edge is no period');
+
 // ---- the database part: the newest version wins ------------------------------------------------------------------
 $name = 'nexapos_lite_report_test_' . getmypid();
 $dbHost = getenv('DB_HOST') ?: '127.0.0.1';
@@ -247,6 +272,14 @@ try {
     $edges = LiteReport::build($pdo, 4, FROM, TO, '2026-11-12', '2026-11-13');
     same([$edges['transactionCount'], $edges['salesTotalCents']], [2, 3000], 'db: a sale at the very start and one a millisecond before the end count; one at the end and one just before the start do not');
     same([$edges['expenseCount'], $edges['expensesTotalCents']], [1, 10], 'db: an expense dated the first day counts; the day after the period and the day before do not');
+
+    $edgeDays = LiteReport::days($pdo, 4, $dayBounds, $dayDates);
+    same([$edgeDays[0]['salesTotalCents'], $edgeDays[0]['expensesTotalCents']], [8000, 40], 'db dashboard: the day before has its own sale and expense');
+    same([$edgeDays[1]['salesTotalCents'], $edgeDays[1]['transactionCount'], $edgeDays[1]['expensesTotalCents']], [3000, 2, 10], 'db dashboard: the next day has the two sales inside it, and not the one at its very end');
+    $oneDay = LiteReport::days($pdo, 1, [FROM, TO], ['2026-11-12', '2026-11-13']);
+    same([$oneDay[0]['salesTotalCents'], $oneDay[0]['transactionCount'], $oneDay[0]['grossProfitCents'], $oneDay[0]['expensesTotalCents'], $oneDay[0]['netProfitCents']],
+        [$report['salesTotalCents'], $report['transactionCount'], $report['grossProfitCents'], $report['expensesTotalCents'], $report['netProfitCents']], 'db dashboard: one period gives the same figures as the report');
+    same(LiteReport::days($pdo, 2, [FROM, TO], ['2026-11-12', '2026-11-13'])[0]['salesTotalCents'], 99999, 'db dashboard: another shop sees only its own');
 
     $none = LiteReport::build($pdo, 3, FROM, TO, '2026-11-12', '2026-11-13');
     same($none['transactionCount'], 0, 'db: a shop with no records');

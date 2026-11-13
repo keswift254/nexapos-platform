@@ -832,7 +832,30 @@ check($figures['grandTotalCents'] === $figures['salesTotalCents'] - $figures['ex
 // Another shop sees none of it.
 $strangerReport = $reportRequest($goodRange, $liteStandaloneAuth);
 check($strangerReport['status'] === 200 && $strangerReport['body']['report']['transactionCount'] === 0 && $strangerReport['body']['report']['salesTotalCents'] === 0, 'Another shop was shown this shop\'s sales: ' . $strangerReport['raw']);
-echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports served.\n";
+// ---- lite_dashboard: the same figures, day by day -------------------------------------------------------------------
+check(request($baseUrl, 'lite_dashboard', 'GET', null, $liteOwnerAuth)['status'] === 403, 'A normal device was given the lite dashboard.');
+check(request($baseUrl, 'lite_dashboard', 'GET', null, [])['status'] === 401, 'The lite dashboard was readable with no key.');
+$dashboardRequest = static function (array $query, array $headers) use ($baseUrl): array {
+    $ch = curl_init($baseUrl . '?' . http_build_query(array_merge(['action' => 'lite_dashboard'], $query)));
+    curl_setopt_array($ch, [CURLOPT_HTTPHEADER => array_merge(['Accept: application/json'], $headers), CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20]);
+    $raw = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['status' => $status, 'body' => json_decode((string) $raw, true), 'raw' => $raw];
+};
+$goodDays = ['bounds' => '2000-01-01T00:00:00.000Z,2050-01-01T00:00:00.000Z,2100-01-01T00:00:00.000Z', 'dates' => '2026-01-01,2026-01-02,2026-01-03'];
+foreach ([[], ['bounds' => $goodDays['bounds']], ['dates' => $goodDays['dates']], array_merge($goodDays, ['dates' => '2026-01-01,2026-01-02']),
+          array_merge($goodDays, ['bounds' => '2050-01-01T00:00:00.000Z,2000-01-01T00:00:00.000Z,2100-01-01T00:00:00.000Z']),
+          array_merge($goodDays, ['dates' => '2026-01-03,2026-01-02,2026-01-01']), array_merge($goodDays, ['bounds' => 'x,y,z']),
+          array_merge($goodDays, ['dates' => '2026-01-01,2026-01-02,2028-01-03']), ['bounds' => '2000-01-01T00:00:00.000Z', 'dates' => '2026-01-01']] as $badDays) {
+    check($dashboardRequest($badDays, $liteAuth)['status'] === 422, 'A bad dashboard period was accepted: ' . json_encode($badDays));
+}
+$dash = $dashboardRequest($goodDays, $liteAuth);
+check($dash['status'] === 200 && ($dash['body']['success'] ?? false) === true && count($dash['body']['days'] ?? []) === 2, 'The lite dashboard was not served: ' . $dash['raw']);
+check(($dash['body']['days'][0]['salesTotalCents'] ?? -1) + ($dash['body']['days'][1]['salesTotalCents'] ?? -1) === $figures['salesTotalCents'], 'The dashboard days do not add up to the report.');
+$strangerDash = $dashboardRequest($goodDays, $liteStandaloneAuth);
+check($strangerDash['status'] === 200 && $strangerDash['body']['days'][0]['salesTotalCents'] === 0, 'Another shop was shown this shop\'s dashboard.');
+echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports and dashboard served.\n";
 echo "Platform integration tests passed.\n";
 
 // Photos are private, validated, and attached to the same message transaction.

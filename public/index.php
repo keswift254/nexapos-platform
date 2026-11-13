@@ -1834,6 +1834,39 @@ if ($action === 'lite_report' && $method === 'GET') {
     ]);
 }
 
+// The lite till's dashboard: sales, transactions, profit and expenses for each of several consecutive periods (today,
+// yesterday, the last 7 days...), by the same rules as lite_report. The till chooses the periods in its own local time:
+// `bounds` are their edges as UTC instants and `dates` the same edges as plain dates (one more edge than periods).
+if ($action === 'lite_dashboard' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    if ($client['channel'] !== 'lite') {
+        jsonResponse(['success' => false, 'message' => 'The shop dashboard view is only for lite tills.'], 403);
+    }
+    $bounds = array_values(array_filter(explode(',', (string) ($_GET['bounds'] ?? '')), static fn (string $v): bool => $v !== ''));
+    $dates = array_values(array_filter(explode(',', (string) ($_GET['dates'] ?? '')), static fn (string $v): bool => $v !== ''));
+    $instant = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/';
+    $plainDate = '/^\d{4}-\d{2}-\d{2}$/';
+    $valid = count($bounds) >= 2 && count($bounds) <= 17 && count($dates) === count($bounds);
+    for ($i = 0; $valid && $i < count($bounds); $i++) {
+        $valid = preg_match($instant, $bounds[$i]) === 1 && preg_match($plainDate, $dates[$i]) === 1
+            && strtotime($bounds[$i]) !== false && strtotime($dates[$i]) !== false
+            && ($i === 0 || (strcmp($bounds[$i], $bounds[$i - 1]) > 0 && strcmp($dates[$i], $dates[$i - 1]) > 0));
+    }
+    if (!$valid) {
+        jsonResponse(['success' => false, 'message' => 'bounds and dates must be 2 to 17 matching, increasing edges (UTC instants like 2026-11-12T00:00:00.000Z and dates like 2026-11-12).'], 422);
+    }
+    $spanDays = (strtotime($dates[count($dates) - 1]) - strtotime($dates[0])) / 86400;
+    if ($spanDays > 400) {
+        jsonResponse(['success' => false, 'message' => 'The dashboard covers at most 400 days.'], 422);
+    }
+    jsonResponse([
+        'success' => true,
+        'shop_id' => (int) $client['shop_id'],
+        'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
+        'days' => LiteReport::days($pdo, (int) $client['shop_id'], $bounds, $dates),
+    ]);
+}
+
 if ($action === 'pull_changes' && $method === 'GET') {
     $client = Auth::requireClient($pdo);
     $since = max(0, (int) ($_GET['since'] ?? 0));

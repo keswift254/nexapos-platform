@@ -1830,7 +1830,7 @@ if ($action === 'lite_report' && $method === 'GET') {
         'success' => true,
         'shop_id' => (int) $client['shop_id'],
         'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
-        'report' => LiteReport::build($pdo, (int) $client['shop_id'], $fromUtc, $toUtc, $fromDate, $toDate),
+        'report' => LiteReport::build($pdo, (int) $client['shop_id'], $fromUtc, $toUtc, $fromDate, $toDate, ($_GET['records'] ?? '') === '1'),
     ]);
 }
 

@@ -855,7 +855,125 @@ check($dash['status'] === 200 && ($dash['body']['success'] ?? false) === true &&
 check(($dash['body']['days'][0]['salesTotalCents'] ?? -1) + ($dash['body']['days'][1]['salesTotalCents'] ?? -1) === $figures['salesTotalCents'], 'The dashboard days do not add up to the report.');
 $strangerDash = $dashboardRequest($goodDays, $liteStandaloneAuth);
 check($strangerDash['status'] === 200 && $strangerDash['body']['days'][0]['salesTotalCents'] === 0, 'Another shop was shown this shop\'s dashboard.');
-echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports and dashboard served.\n";
+// ---- expenses: a lite till may add and delete them, and the shop's reports follow ----------------------------------
+$expenseFixture = json_decode((string) file_get_contents(__DIR__ . '/../fixtures/sync_guard/expense_scenarios.json'), true, 512, JSON_THROW_ON_ERROR);
+$expenseScenario = static function (string $name) use ($expenseFixture): array {
+    foreach ($expenseFixture['scenarios'] as $scenario) {
+        if ($scenario['name'] === $name) {
+            return $scenario;
+        }
+    }
+    throw new RuntimeException("No expense scenario $name.");
+};
+$cashierOfShop = $cashScenario['context']['cashierId'];
+$expensePeriod = ['from_utc' => '2026-11-04T00:00:00.000Z', 'to_utc' => '2026-11-07T00:00:00.000Z', 'from_date' => '2026-11-05', 'to_date' => '2026-11-06'];
+$expensesInReport = static function () use ($reportRequest, $expensePeriod, $liteAuth): array {
+    $answer = $reportRequest($expensePeriod, $liteAuth);
+    check($answer['status'] === 200, 'The report for the expense period was not served: ' . $answer['raw']);
+    return $answer['body']['report'];
+};
+$before = $expensesInReport();
+
+// a new expense the real app would have written (entered by a cashier of this shop)
+$added = $expenseScenario('expense_with_user_and_note')['stages'][0]['changes'];
+$added[0]['payload']['userId'] = $cashierOfShop;
+$beforeStored = $liteStored();
+$badAmount = $added;
+$badAmount[0]['payload']['amountCents'] = 0;
+check($litePush($asLite($badAmount))['status'] === 422, 'An expense of zero was accepted.');
+check($liteStored() === $beforeStored, 'A refused expense left something stored.');
+$unknownUser = $added;
+$unknownUser[0]['payload']['userId'] = '00000000-0000-4000-8000-0000000000aa';
+check($litePush($asLite($unknownUser))['status'] === 422, 'An expense by a stranger was accepted.');
+$addedAsPushed = $asLite($added);
+$pushed = $litePush($addedAsPushed);
+check($pushed['status'] === 200, 'A good expense was refused: ' . $pushed['raw']);
+$after = $expensesInReport();
+check($after['expensesTotalCents'] === $before['expensesTotalCents'] + 250050, 'The new expense is not in the report total: ' . $before['expensesTotalCents'] . ' -> ' . $after['expensesTotalCents']);
+$titles = array_column($after['expenses'], 'title');
+check(in_array('Transport', $titles, true), 'The new expense is not listed in the report.');
+$listed = null;
+foreach ($after['expenses'] as $candidate) {
+    if ($candidate['title'] === 'Transport') {
+        $listed = $candidate;
+    }
+}
+check($listed !== null && $listed['amountCents'] === 250050 && $listed['note'] === 'Delivery to Kisumu' && $listed['expenseDate'] === '2026-11-05', 'The listed expense is not what was entered: ' . json_encode($listed));
+check($listed['enteredByName'] !== 'System Admin' && $listed['enteredByName'] !== '', 'The expense was not shown as entered by the cashier.');
+
+// sending the very same change again (a reply was lost, so the till tries again) is accepted and stores nothing twice
+$storedNow = $liteStored();
+check($litePush($addedAsPushed)['status'] === 200, 'A resent expense was refused.');
+check($liteStored() === $storedNow, 'A resent expense was stored twice.');
+// but writing the same expense again as a NEW change (it exists now) is refused: an existing expense can only be deleted
+check($litePush($asLite($added))['status'] === 422, 'An existing expense was written a second time.');
+check($liteStored() === $storedNow, 'A refused rewrite left something stored.');
+
+// deleting an expense the till made, with the app's own deletion record
+$toDelete = $expenseScenario('expense_created_then_deleted');
+$created = $toDelete['stages'][0]['changes'];
+$deleted = $toDelete['stages'][1]['changes'];
+// the scenario's first stage holds only the expense that is deleted afterwards
+$deletedId = $deleted[0]['payload']['id'];
+$createdOne = array_values(array_filter($created, static fn (array $c): bool => $c['payload']['id'] === $deletedId));
+$createdOne[0]['payload']['userId'] = $cashierOfShop;
+$deleted[0]['payload']['userId'] = $cashierOfShop;
+$wrongEntry = $litePush($asLite($createdOne));
+check($wrongEntry['status'] === 200, 'The expense to delete was refused: ' . $wrongEntry['raw']);
+$mid = $expensesInReport();
+check(in_array('Wrong entry', array_column($mid['expenses'], 'title'), true), 'The expense to delete is not in the report yet.');
+$deletion = $litePush($asLite($deleted));
+check($deletion['status'] === 200, 'The deletion was refused: ' . $deletion['raw']);
+$gone = $expensesInReport();
+check(!in_array('Wrong entry', array_column($gone['expenses'], 'title'), true), 'A deleted expense is still in the report.');
+check($gone['expensesTotalCents'] === $mid['expensesTotalCents'] - 7500, 'The deleted expense is still in the total.');
+// a deleted expense cannot be brought back, and deleting it twice is refused
+$again = $asLite($deleted);
+check($litePush($again)['status'] === 422, 'An expense was deleted twice.');
+
+// an expense ANOTHER device (the shop's main device) made can be seen, but a till cannot delete it
+$mainStamp = '2026-11-13T09:00:00.000000Z';
+$mainExpenseId = '00000000-0000-4000-8000-0000000000e1';
+$mainPayload = ['id' => $mainExpenseId, 'createdAt' => $mainStamp, 'updatedAt' => $mainStamp, 'deletedAt' => null, 'syncState' => 'local_only', 'userId' => $cashierOfShop, 'expenseDate' => '2026-11-05', 'title' => 'Made on the main PC', 'amountCents' => 4000, 'note' => null];
+check($nativePush('expenses', $mainPayload)['status'] === 200, 'The main device could not record an expense.');
+$mainStored = $pdo->query("SELECT payload FROM sync_changes WHERE row_id = '$mainExpenseId' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$mainRow = json_decode((string) $mainStored, true);
+$beforeMain = $expensesInReport();
+check(in_array('Made on the main PC', array_column($beforeMain['expenses'], 'title'), true), 'The main device\'s expense is not in the report.');
+$mainDelete = $mainRow;
+$mainDelete['deletedAt'] = '2026-11-13T10:00:00.000000Z';
+$mainDelete['updatedAt'] = '2026-11-13T10:00:00.000000Z';
+$mainDelete['localRev'] = ++$liteRevision;
+$mainPush = $litePush([['table_name' => 'expenses', 'row_id' => $mainExpenseId, 'local_rev' => $mainDelete['localRev'], 'updated_at' => $mainDelete['updatedAt'], 'payload' => $mainDelete]]);
+check($mainPush['status'] === 422, 'A till deleted an expense another device made: ' . $mainPush['raw']);
+check(in_array('Made on the main PC', array_column($expensesInReport()['expenses'], 'title'), true), 'A refused deletion removed the main device\'s expense from the report.');
+// ... and editing someone else's expense (not a deletion) is refused too
+$mainEdit = $mainRow;
+$mainEdit['title'] = 'Edited by the till';
+$mainEdit['updatedAt'] = '2026-11-13T11:00:00.000000Z';
+$mainEdit['localRev'] = ++$liteRevision;
+$secondId = '00000000-0000-4000-8000-0000000000e2';
+$secondPayload = array_merge($mainPayload, ['id' => $secondId, 'title' => 'Second main PC expense']);
+check($nativePush('expenses', $secondPayload)['status'] === 200, 'The main device could not record a second expense.');
+$secondRow = json_decode((string) $pdo->query("SELECT payload FROM sync_changes WHERE row_id = '$secondId' ORDER BY id DESC LIMIT 1")->fetchColumn(), true);
+$secondRow['title'] = 'Edited by the till';
+$secondRow['updatedAt'] = '2026-11-13T11:00:00.000000Z';
+$secondRow['localRev'] = ++$liteRevision;
+check($litePush([['table_name' => 'expenses', 'row_id' => $secondId, 'local_rev' => $secondRow['localRev'], 'updated_at' => $secondRow['updatedAt'], 'payload' => $secondRow]])['status'] === 422, 'A till edited another device\'s expense.');
+check(in_array('Second main PC expense', array_column($expensesInReport()['expenses'], 'title'), true), 'A refused edit changed the expense.');
+
+// the whole record of each expense, only when asked for (the till needs it to delete the ones it entered)
+check(!array_key_exists('record', $expensesInReport()['expenses'][0]), 'A plain report carried whole expense records.');
+$withRecords = $reportRequest($expensePeriod + ['records' => '1'], $liteAuth);
+check($withRecords['status'] === 200, 'The report with records was not served: ' . $withRecords['raw']);
+$recordsOf = [];
+foreach ($withRecords['body']['report']['expenses'] as $candidate) {
+    $recordsOf[$candidate['title']] = $candidate['record'] ?? null;
+}
+check(is_array($recordsOf['Second main PC expense'] ?? null) && ($recordsOf['Second main PC expense']['createdByDeviceId'] ?? '') !== '' && ($recordsOf['Second main PC expense']['createdByDeviceId'] ?? '') !== 'lite-till-device', 'The main device\'s expense does not name the device that entered it: ' . json_encode($recordsOf['Second main PC expense'] ?? null));
+check(is_array($recordsOf['Transport'] ?? null) && ($recordsOf['Transport']['createdByDeviceId'] ?? '') === 'lite-till-device', 'The till\'s own expense does not name the till as its device: ' . json_encode($recordsOf['Transport'] ?? null));
+
+echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports and dashboard served, expenses added and deleted.\n";
 echo "Platform integration tests passed.\n";
 
 // Photos are private, validated, and attached to the same message transaction.

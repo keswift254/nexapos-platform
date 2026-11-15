@@ -35,11 +35,11 @@ final class LiteReport
     private const MPESA_FAMILY = ['paystack', 'mpesa', 'mpesa_manual', 'intasend'];
 
     /** @return array<string,mixed> */
-    public static function build(PDO $pdo, int $shopId, string $fromUtc, string $toUtc, string $fromDate, string $toDate): array
+    public static function build(PDO $pdo, int $shopId, string $fromUtc, string $toUtc, string $fromDate, string $toDate, bool $withRecords = false): array
     {
         [$paid, $itemsBySale, $expenses, $names] = self::load($pdo, $shopId, $fromUtc, $toUtc, $fromDate, $toDate);
 
-        return self::aggregate($paid, $itemsBySale, $expenses, $names, $fromUtc, $toUtc, $fromDate, $toDate);
+        return self::aggregate($paid, $itemsBySale, $expenses, $names, $fromUtc, $toUtc, $fromDate, $toDate, $withRecords);
     }
 
     /**
@@ -144,10 +144,11 @@ final class LiteReport
      * @param array<string,list<array<string,mixed>>> $itemsBySale sale id => its (non-deleted) items
      * @param array<string,array<string,mixed>> $expenses    expense id => expense, in range
      * @param array<string,string> $userNames                user id => name
+     * @param bool $withRecords                              also give each expense's whole stored record
      * @return array<string,mixed>
      */
     public static function aggregate(array $paidSales, array $itemsBySale, array $expenses, array $userNames,
-        string $fromUtc, string $toUtc, string $fromDate, string $toDate): array
+        string $fromUtc, string $toUtc, string $fromDate, string $toDate, bool $withRecords = false): array
     {
         $salesTotal = 0;
         $grossProfit = 0;
@@ -222,6 +223,10 @@ final class LiteReport
                 'enteredByName' => ($userId !== '' && ($userNames[$userId] ?? '') !== '') ? $userNames[$userId] : 'System Admin',
                 'expenseDate' => $date,
             ];
+            if ($withRecords) {
+                // The whole stored record (who entered it on which device...), for a till that may delete the ones it entered.
+                $expenseRows[count($expenseRows) - 1]['record'] = $expense;
+            }
         }
         // Oldest first, as in the apps (expense date, then when it was entered, then id).
         usort($expenseRows, static fn (array $a, array $b): int => [$a['expenseDate'], $a['createdAt'], $a['id']] <=> [$b['expenseDate'], $b['createdAt'], $b['id']]);

@@ -136,6 +136,14 @@ $r = agg([], [], [
 ]);
 same(array_column($r['expenses'], 'id'), ['c', 'a', 'b'], 'expenses: oldest first, then by id');
 
+// ---- the whole record of each expense, only when asked ---------------------------------------------------------------
+$withExpense = ['e1' => expense('e1', '2026-11-12', 3000, ['createdByDeviceId' => 'lite-till-1', 'localRev' => 7])];
+$plain = LiteReport::aggregate([], [], $withExpense, ['u1' => 'Wanjiru'], FROM, TO, '2026-11-12', '2026-11-13');
+check(!array_key_exists('record', $plain['expenses'][0]), 'An ordinary report carries each expense\'s whole record.');
+$full = LiteReport::aggregate([], [], $withExpense, ['u1' => 'Wanjiru'], FROM, TO, '2026-11-12', '2026-11-13', true);
+same($full['expenses'][0]['record'], $withExpense['e1'], 'With records asked for, each expense carries its whole stored record');
+same($full['expensesTotalCents'], $plain['expensesTotalCents'], 'asking for records changes no figure');
+
 // ---- lists are bounded, totals are not ---------------------------------------------------------------------------
 same(LiteReport::MAX_LISTED, 500, 'the lists are cut at 500 rows');
 $many = [];

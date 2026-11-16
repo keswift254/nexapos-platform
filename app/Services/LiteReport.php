@@ -332,7 +332,7 @@ final class LiteReport
      * @param list<string> $params
      * @return array<string,array<string,mixed>> row id => payload
      */
-    private static function newest(PDO $pdo, int $shopId, int $cursor, string $table, string $where, array $params): array
+    public static function newest(PDO $pdo, int $shopId, int $cursor, string $table, string $where, array $params): array
     {
         $stmt = $pdo->prepare(
             "SELECT row_id, device_id, updated_at, payload FROM sync_changes

@@ -30,6 +30,9 @@ use Platform\Services\SyncSnapshot;
 use Platform\Services\SupportMailer;
 use Platform\Services\SupportNotifier;
 use Platform\Services\SupportAttachments;
+use Platform\Services\MpesaSms;
+use Platform\Services\PaymentInbox;
+use Platform\Services\PaymentInboxRefusal;
 
 /**
  * The 10 SyncedColumns tables on the phone (see _syncedTableNames in
@@ -507,6 +510,139 @@ if ($action === 'intasend_webhook' && $method === 'POST') {
     }
 
     jsonResponse(['success' => true, 'outcome' => $result['outcome']]);
+}
+
+// "Manual Till/Paybill": the shop's payment inbox (see PaymentInbox). The customer pays the shop's own M-Pesa till or
+// paybill; the phone that gets Safaricom's "payment received" SMS passes it on here, and any till of the shop can check a
+// code against what arrived. A code can be used on one sale only.
+
+/** Answers with what the payment inbox refused, in the shape every client of this API expects. */
+function paymentInboxRefused(PaymentInboxRefusal $refusal): void
+{
+    jsonResponse(array_merge(['success' => false, 'reason' => $refusal->reason, 'message' => $refusal->getMessage()], $refusal->details), $refusal->status);
+}
+
+/** The M-Pesa code in a request, in its stored form; 422 when it cannot be one. */
+function paymentInboxCode($raw): string
+{
+    $code = MpesaSms::normalizeCode((string) $raw);
+    if ($code === null) {
+        jsonResponse(['success' => false, 'reason' => 'bad_code', 'message' => 'That does not look like an M-Pesa code. It is the 10 letters and numbers at the start of the message.'], 422);
+    }
+    return $code;
+}
+
+// A phone passing an SMS on. NOT a device of the shop: it proves itself with the key it was given when it was set up,
+// sent in the body (never in the address, where it would end up in server logs). Only payments RECEIVED are kept.
+if ($action === 'payment_inbox_ingest' && $method === 'POST') {
+    $raw = (string) file_get_contents('php://input');
+    if (strlen($raw) > 16384) {
+        jsonResponse(['success' => false, 'reason' => 'too_long', 'message' => 'That is too long to be an SMS.'], 422);
+    }
+    $body = json_decode($raw, true);
+    if (!is_array($body)) {
+        // An iPhone Shortcut may send a form instead of JSON.
+        $body = $_POST;
+    }
+    $key = $body['key'] ?? '';
+    $text = $body['text'] ?? '';
+    if (!is_string($key) || !is_string($text) || trim($text) === '') {
+        jsonResponse(['success' => false, 'reason' => 'bad_request', 'message' => 'Send "key" (this phone\'s key) and "text" (the SMS).'], 422);
+    }
+    if (mb_strlen($text) > MpesaSms::MAX_LENGTH) {
+        jsonResponse(['success' => false, 'reason' => 'too_long', 'message' => 'That is too long to be an SMS.'], 422);
+    }
+    try {
+        $result = PaymentInbox::ingest($pdo, trim($key), $text);
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    jsonResponse(['success' => true, 'recorded' => $result['recorded'], 'reason' => $result['reason']]);
+}
+
+// The shop's phones that pass messages on (never their keys).
+if ($action === 'payment_inbox_sources' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    jsonResponse(['success' => true, 'phones' => PaymentInbox::sources($pdo, (int) $client['shop_id']), 'max_phones' => PaymentInbox::MAX_SOURCES]);
+}
+
+// Sets a phone up: answers with its key, once. Whoever holds a key can pass on a made-up message, so this needs the
+// password of an administrator of the shop, checked here against the shop's own users - not just a device of the shop.
+if ($action === 'payment_inbox_add_source' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    try {
+        $admin = PaymentInbox::requireAdmin($pdo, (int) $client['shop_id'], (string) ($body['user_id'] ?? ''), (string) ($body['password'] ?? ''));
+        $added = PaymentInbox::addSource($pdo, (int) $client['shop_id'], (int) $client['id'], (string) ($body['label'] ?? ''), $admin['username']);
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    jsonResponse(['success' => true, 'key' => $added['key'], 'phone' => $added['source']], 201);
+}
+
+if ($action === 'payment_inbox_remove_source' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    try {
+        PaymentInbox::requireAdmin($pdo, (int) $client['shop_id'], (string) ($body['user_id'] ?? ''), (string) ($body['password'] ?? ''));
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    if (!PaymentInbox::removeSource($pdo, (int) $client['shop_id'], (int) ($body['phone_id'] ?? 0))) {
+        jsonResponse(['success' => false, 'reason' => 'not_found', 'message' => 'The shop has no such phone.'], 404);
+    }
+    jsonResponse(['success' => true, 'phones' => PaymentInbox::sources($pdo, (int) $client['shop_id'])]);
+}
+
+// What arrived and what was used lately, newest first.
+if ($action === 'payment_inbox_list' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    $hours = (int) ($_GET['hours'] ?? 24);
+    jsonResponse([
+        'success' => true,
+        'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
+        'phones' => count(PaymentInbox::sources($pdo, (int) $client['shop_id'])),
+        'payments' => PaymentInbox::recent($pdo, (int) $client['shop_id'], $hours < 1 ? 24 : $hours),
+    ]);
+}
+
+// One code: has its message arrived, for how much, and is it used?
+if ($action === 'payment_inbox_check' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    $code = paymentInboxCode($_GET['code'] ?? '');
+    $payment = PaymentInbox::find($pdo, (int) $client['shop_id'], $code);
+    jsonResponse(['success' => true, 'code' => $code, 'found' => $payment !== null, 'payment' => $payment]);
+}
+
+// Uses a code on one sale (see PaymentInbox::claim).
+if ($action === 'payment_inbox_claim' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $code = paymentInboxCode($body['code'] ?? '');
+    $saleId = (string) ($body['sale_id'] ?? '');
+    $saleNumber = trim((string) ($body['sale_number'] ?? ''));
+    $amount = $body['amount_cents'] ?? null;
+    if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $saleId) !== 1
+        || $saleNumber === '' || mb_strlen($saleNumber) > 60 || !is_int($amount) || $amount <= 0) {
+        jsonResponse(['success' => false, 'reason' => 'bad_request', 'message' => 'sale_id, sale_number and amount_cents (a whole number above 0) are required.'], 422);
+    }
+    try {
+        $claimed = PaymentInbox::claim(
+            $pdo, (int) $client['shop_id'], (int) $client['id'], $code, $saleId, $saleNumber, $amount,
+            ($body['require_message'] ?? false) === true, ($body['accept_amount'] ?? false) === true
+        );
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    jsonResponse(['success' => true, 'confirmed' => $claimed['confirmed'], 'payment' => $claimed['payment']]);
+}
+
+// Frees a code a sale had used (the sale was cancelled before it was finished).
+if ($action === 'payment_inbox_release' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $code = paymentInboxCode($body['code'] ?? '');
+    jsonResponse(['success' => true, 'released' => PaymentInbox::release($pdo, (int) $client['shop_id'], $code, (string) ($body['sale_id'] ?? ''))]);
 }
 
 // Customer support tickets. Every action is authenticated and shop-scoped:

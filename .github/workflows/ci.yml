@@ -67,6 +67,8 @@ jobs:
         run: php tests/verify_refund_guard.php
       - name: Verify the support email sender (SMTP)
         run: php tests/verify_smtp_client.php
+      - name: Verify the M-Pesa SMS reader (payments received are read, everything else is dropped)
+        run: php tests/verify_mpesa_sms.php
       - name: Verify initial sync snapshots
         run: php tests/integration/sync_snapshot.php
       - name: Support chat and ticket emails

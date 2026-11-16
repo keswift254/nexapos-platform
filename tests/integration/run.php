@@ -1128,3 +1128,6 @@ foreach ([['data' => base64_encode('<svg onload="alert(1)"></svg>')], ['data' =>
 }
 check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Too many', 'attachments' => array_fill(0, 5, ['data' => $png])], ['Authorization: Bearer ' . $supportKey])['status'] === 422, 'Too many photos accepted.');
 echo "Support photo access and validation tests passed.\n";
+
+// "Manual Till/Paybill": the shop's payment inbox.
+require __DIR__ . '/payment_inbox.php';

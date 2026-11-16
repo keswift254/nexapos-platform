@@ -183,7 +183,7 @@ $twoDays = LiteReport::buckets([
 same(count($twoDays), 2, 'two periods from three edges');
 same([$twoDays[0]['salesTotalCents'], $twoDays[0]['transactionCount'], $twoDays[0]['grossProfitCents'], $twoDays[0]['expensesTotalCents'], $twoDays[0]['netProfitCents']], [5000, 1, 3000, 500, 2500], 'dashboard: the first day');
 same([$twoDays[1]['salesTotalCents'], $twoDays[1]['transactionCount'], $twoDays[1]['grossProfitCents'], $twoDays[1]['expensesTotalCents'], $twoDays[1]['netProfitCents']], [10000, 2, 9000, 700, 8300], 'dashboard: the second day (a sale at its first instant counts, one at the next day\'s first instant does not)');
-same(array_keys($twoDays[0]), ['fromUtc', 'toUtc', 'fromDate', 'toDate', 'salesTotalCents', 'transactionCount', 'grossProfitCents', 'expensesTotalCents', 'netProfitCents'], 'dashboard: only the figures, no lists');
+same(array_keys($twoDays[0]), ['fromUtc', 'toUtc', 'fromDate', 'toDate', 'salesTotalCents', 'refundsCents', 'transactionCount', 'grossProfitCents', 'expensesTotalCents', 'netProfitCents'], 'dashboard: only the figures, no lists');
 same([$twoDays[1]['fromUtc'], $twoDays[1]['toUtc'], $twoDays[1]['fromDate'], $twoDays[1]['toDate']], ['2026-11-12T00:00:00.000Z', '2026-11-13T00:00:00.000Z', '2026-11-12', '2026-11-13'], 'dashboard: each period says which period it is');
 $quiet = LiteReport::buckets([], [], [], [], $dayBounds, $dayDates);
 same([$quiet[0]['salesTotalCents'], $quiet[0]['transactionCount'], $quiet[1]['expensesTotalCents'], $quiet[1]['netProfitCents']], [0, 0, 0, 0], 'dashboard: a quiet day is zeros');

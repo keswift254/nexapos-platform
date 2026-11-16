@@ -973,7 +973,37 @@ foreach ($withRecords['body']['report']['expenses'] as $candidate) {
 check(is_array($recordsOf['Second main PC expense'] ?? null) && ($recordsOf['Second main PC expense']['createdByDeviceId'] ?? '') !== '' && ($recordsOf['Second main PC expense']['createdByDeviceId'] ?? '') !== 'lite-till-device', 'The main device\'s expense does not name the device that entered it: ' . json_encode($recordsOf['Second main PC expense'] ?? null));
 check(is_array($recordsOf['Transport'] ?? null) && ($recordsOf['Transport']['createdByDeviceId'] ?? '') === 'lite-till-device', 'The till\'s own expense does not name the till as its device: ' . json_encode($recordsOf['Transport'] ?? null));
 
-echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports and dashboard served, expenses added and deleted.\n";
+// ---- refunds: the real app's refund records, pushed by a normal device, show up in the lite reports ----------------
+$refundFixture = json_decode((string) file_get_contents(__DIR__ . '/../fixtures/sync_guard/refund_scenarios.json'), true, 512, JSON_THROW_ON_ERROR);
+$manualItem = null;
+foreach ($refundFixture['scenarios'] as $candidate) {
+    if ($candidate['name'] === 'refund_manual_item') {
+        $manualItem = $candidate;
+    }
+}
+check($manualItem !== null, 'The refund fixture has no refund_manual_item scenario.');
+foreach ($manualItem['stages'] as $stage) {
+    foreach ($stage['changes'] as $change) {
+        // A normal device pushes whatever the app wrote: a refund is just another sale row, so it must be accepted as it is.
+        $pushedRefund = $nativePush($change['table_name'], $change['payload']);
+        check($pushedRefund['status'] === 200, 'The app\'s own ' . $change['table_name'] . ' record of a refund scenario was refused: ' . $pushedRefund['raw']);
+    }
+}
+$refundDay = $reportRequest(['from_utc' => '2026-11-16T00:00:00.000Z', 'to_utc' => '2026-11-17T00:00:00.000Z', 'from_date' => '2026-11-16', 'to_date' => '2026-11-17'], $liteAuth);
+check($refundDay['status'] === 200, 'The report for the refund day was not served: ' . $refundDay['raw']);
+$refundReport = $refundDay['body']['report'];
+check($refundReport['salesTotalCents'] === 15000 && $refundReport['transactionCount'] === 1, 'The sale of the refund scenario is not in the report as a sale: ' . json_encode([$refundReport['salesTotalCents'], $refundReport['transactionCount']]));
+check($refundReport['refundsTotalCents'] === 5000 && $refundReport['refundCount'] === 1, 'The refund is not counted in Refunds: ' . json_encode([$refundReport['refundsTotalCents'], $refundReport['refundCount']]));
+check($refundReport['grandTotalCents'] === 15000 - 5000 - $refundReport['expensesTotalCents'], 'Grand total is not paid sales minus refunds minus expenses.');
+check(count($refundReport['sales']) === 1 && $refundReport['sales'][0]['refundedCents'] === 5000, 'The refunded sale does not say how much of it has gone back.');
+check(($refundReport['refunds'][0]['reason'] ?? '') === 'Not delivered' && ($refundReport['refunds'][0]['itemNames'] ?? '') === 'Delivery x1' && $refundReport['refunds'][0]['totalCents'] === 5000, 'The refund is not listed as the app wrote it: ' . json_encode($refundReport['refunds'][0] ?? null));
+check($refundReport['refunds'][0]['originalSaleNumber'] === $refundReport['sales'][0]['saleNumber'], 'The refund does not name the sale it gives back.');
+$refundDash = $dashboardRequest(['bounds' => '2026-11-16T00:00:00.000Z,2026-11-17T00:00:00.000Z', 'dates' => '2026-11-16,2026-11-17'], $liteAuth);
+check(($refundDash['body']['days'][0]['salesTotalCents'] ?? null) === 10000 && ($refundDash['body']['days'][0]['refundsCents'] ?? null) === 5000, 'The dashboard is not net of the refund: ' . $refundDash['raw']);
+$strangerRefunds = $reportRequest(['from_utc' => '2026-11-16T00:00:00.000Z', 'to_utc' => '2026-11-17T00:00:00.000Z', 'from_date' => '2026-11-16', 'to_date' => '2026-11-17'], $liteStandaloneAuth);
+check(($strangerRefunds['body']['report']['refundsTotalCents'] ?? -1) === 0, 'Another shop was shown this shop\'s refund.');
+
+echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports and dashboard served, expenses added and deleted, refunds reported.\n";
 echo "Platform integration tests passed.\n";
 
 // Photos are private, validated, and attached to the same message transaction.

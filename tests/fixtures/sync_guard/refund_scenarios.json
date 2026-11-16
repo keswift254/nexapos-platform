@@ -1,0 +1,1382 @@
+{
+  "generated_by": "test/tool/refund_contract_fixtures_test.dart",
+  "scenarios": [
+    {
+      "name": "refund_discounted_sale_in_three_parts",
+      "what": "A discounted cash sale refunded one widget at a time: the discount comes back in proportion, the last part takes the rounding.",
+      "context": {
+        "deviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+        "cashierId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+        "managerId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+        "products": [
+          {
+            "id": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T12:51:03.726000Z",
+            "deletedAt": null,
+            "localRev": 6,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Widget",
+            "name": "Widget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 10000,
+            "wholesalePriceCents": 10000,
+            "costPriceCents": 6000,
+            "stockQty": 18,
+            "reorderLevel": 2,
+            "status": "active"
+          },
+          {
+            "id": "4419a896-ac23-445f-8135-4c5a507163c7",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T12:51:03.052000Z",
+            "deletedAt": null,
+            "localRev": 8,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Gadget",
+            "name": "Gadget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 25050,
+            "wholesalePriceCents": 25050,
+            "costPriceCents": 15000,
+            "stockQty": 20,
+            "reorderLevel": 2,
+            "status": "active"
+          }
+        ],
+        "users": [
+          {
+            "id": "39b1868a-8057-4ff2-a580-ed400bb9316a",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 10,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$hKYrLJ69kZOKqbfeywon5uLMGf2y7oovN8d8Kn9/B9qPuT8tGrXGG",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 11,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000002",
+            "name": "Manager",
+            "username": "manager",
+            "email": null,
+            "passwordHash": "$2a$10$tfWKlSDtfasg4RtQby5Aie94kSIbL9NhRAxybRCBqxQMbIlA8Ng3K",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 12,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000003",
+            "name": "Cashier",
+            "username": "cashier",
+            "email": null,
+            "passwordHash": "$2a$10$1WUVc95dvbxAHfLCH92QGuC3CK5kMQTOLH5CPgtR1C0WxwhteBX9u",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "22fb793b-151f-4b38-8f1f-2422d1257f24",
+              "local_rev": 34,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "22fb793b-151f-4b38-8f1f-2422d1257f24",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 34,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-O8P8",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "retail",
+                "paymentMethod": "cash",
+                "subtotalCents": 30000,
+                "discountCents": 10000,
+                "totalCents": 20000,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": null,
+                "refundReason": null
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "3ce74267-d6c5-47e1-bd41-14015c7032a7",
+              "local_rev": 35,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "3ce74267-d6c5-47e1-bd41-14015c7032a7",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 35,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "22fb793b-151f-4b38-8f1f-2422d1257f24",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": 3,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": 30000,
+                "refundOfItemId": null
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "7e2b6267-1c25-4a47-938f-5af8cb9306da",
+              "local_rev": 36,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "7e2b6267-1c25-4a47-938f-5af8cb9306da",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 36,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "movementType": "sale",
+                "quantity": -3,
+                "note": "Sale A1A486-20261116090000-O8P8"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "06cb1903-afde-4a28-b080-ff95c3b84f4a",
+              "local_rev": 37,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "06cb1903-afde-4a28-b080-ff95c3b84f4a",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 37,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-6W5E",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "refund",
+                "paymentMethod": "cash",
+                "subtotalCents": -10000,
+                "discountCents": -3333,
+                "totalCents": -6667,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": "22fb793b-151f-4b38-8f1f-2422d1257f24",
+                "refundReason": "one"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "06d54823-0a55-4088-a24d-16d0656c2586",
+              "local_rev": 38,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "06d54823-0a55-4088-a24d-16d0656c2586",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 38,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "06cb1903-afde-4a28-b080-ff95c3b84f4a",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": -1,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": -10000,
+                "refundOfItemId": "3ce74267-d6c5-47e1-bd41-14015c7032a7"
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "62caedc8-3dcb-40d7-a877-07d9e753e5a6",
+              "local_rev": 39,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "62caedc8-3dcb-40d7-a877-07d9e753e5a6",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 39,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "movementType": "return",
+                "quantity": 1,
+                "note": "Refund A1A486-20261116090000-6W5E"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 3,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "b6074860-ceaf-401a-967b-e208bb2002af",
+              "local_rev": 40,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "b6074860-ceaf-401a-967b-e208bb2002af",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 40,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-8NKS",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "refund",
+                "paymentMethod": "cash",
+                "subtotalCents": -10000,
+                "discountCents": -3334,
+                "totalCents": -6666,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": "22fb793b-151f-4b38-8f1f-2422d1257f24",
+                "refundReason": "two"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "eddf1ae4-7faa-450c-bae8-edd790a71ac9",
+              "local_rev": 41,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "eddf1ae4-7faa-450c-bae8-edd790a71ac9",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 41,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "b6074860-ceaf-401a-967b-e208bb2002af",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": -1,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": -10000,
+                "refundOfItemId": "3ce74267-d6c5-47e1-bd41-14015c7032a7"
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "f092308e-6bec-4d79-b0ed-0929be1f00f7",
+              "local_rev": 42,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "f092308e-6bec-4d79-b0ed-0929be1f00f7",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 42,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "movementType": "return",
+                "quantity": 1,
+                "note": "Refund A1A486-20261116090000-8NKS"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 4,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "b28144b2-1d78-4e2c-9708-313092b0cb4c",
+              "local_rev": 43,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "b28144b2-1d78-4e2c-9708-313092b0cb4c",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 43,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-7AKK",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "refund",
+                "paymentMethod": "cash",
+                "subtotalCents": -10000,
+                "discountCents": -3333,
+                "totalCents": -6667,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": "22fb793b-151f-4b38-8f1f-2422d1257f24",
+                "refundReason": "three"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "ca32e3ca-02c9-491d-9ced-dcf84c9565e1",
+              "local_rev": 44,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "ca32e3ca-02c9-491d-9ced-dcf84c9565e1",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 44,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "b28144b2-1d78-4e2c-9708-313092b0cb4c",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": -1,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": -10000,
+                "refundOfItemId": "3ce74267-d6c5-47e1-bd41-14015c7032a7"
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "459fb7e3-12b6-4611-b440-9572d83b068a",
+              "local_rev": 45,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "459fb7e3-12b6-4611-b440-9572d83b068a",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 45,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "movementType": "return",
+                "quantity": 1,
+                "note": "Refund A1A486-20261116090000-7AKK"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "refund_manual_item",
+      "what": "A sale with a manual item (no product): refunding it moves no stock.",
+      "context": {
+        "deviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+        "cashierId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+        "managerId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+        "products": [
+          {
+            "id": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 6,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Widget",
+            "name": "Widget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 10000,
+            "wholesalePriceCents": 10000,
+            "costPriceCents": 6000,
+            "stockQty": 17,
+            "reorderLevel": 2,
+            "status": "active"
+          },
+          {
+            "id": "4419a896-ac23-445f-8135-4c5a507163c7",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T12:51:03.052000Z",
+            "deletedAt": null,
+            "localRev": 8,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Gadget",
+            "name": "Gadget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 25050,
+            "wholesalePriceCents": 25050,
+            "costPriceCents": 15000,
+            "stockQty": 20,
+            "reorderLevel": 2,
+            "status": "active"
+          }
+        ],
+        "users": [
+          {
+            "id": "39b1868a-8057-4ff2-a580-ed400bb9316a",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 10,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$hKYrLJ69kZOKqbfeywon5uLMGf2y7oovN8d8Kn9/B9qPuT8tGrXGG",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 11,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000002",
+            "name": "Manager",
+            "username": "manager",
+            "email": null,
+            "passwordHash": "$2a$10$tfWKlSDtfasg4RtQby5Aie94kSIbL9NhRAxybRCBqxQMbIlA8Ng3K",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 12,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000003",
+            "name": "Cashier",
+            "username": "cashier",
+            "email": null,
+            "passwordHash": "$2a$10$1WUVc95dvbxAHfLCH92QGuC3CK5kMQTOLH5CPgtR1C0WxwhteBX9u",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "26d28255-9c46-4ee4-9b76-66614c5f27e1",
+              "local_rev": 46,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "26d28255-9c46-4ee4-9b76-66614c5f27e1",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 46,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-Y7CU",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "retail",
+                "paymentMethod": "cash",
+                "subtotalCents": 15000,
+                "discountCents": 0,
+                "totalCents": 15000,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": null,
+                "refundReason": null
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "4be22774-95bb-4b76-88e3-9c7c6446ba65",
+              "local_rev": 47,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "4be22774-95bb-4b76-88e3-9c7c6446ba65",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 47,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "26d28255-9c46-4ee4-9b76-66614c5f27e1",
+                "productId": null,
+                "itemName": "Delivery",
+                "quantity": 1,
+                "unitPriceCents": 5000,
+                "costPriceCents": 0,
+                "lineTotalCents": 5000,
+                "refundOfItemId": null
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "5c6cfa75-eaac-41fb-b57a-6fd1879ad7e6",
+              "local_rev": 48,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "5c6cfa75-eaac-41fb-b57a-6fd1879ad7e6",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 48,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "26d28255-9c46-4ee4-9b76-66614c5f27e1",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": 1,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": 10000,
+                "refundOfItemId": null
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "28c9cc10-3c6e-4199-8eca-4882f182eaef",
+              "local_rev": 49,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "28c9cc10-3c6e-4199-8eca-4882f182eaef",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 49,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "movementType": "sale",
+                "quantity": -1,
+                "note": "Sale A1A486-20261116090000-Y7CU"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "85239dab-a99c-4000-b9fb-27a612da1666",
+              "local_rev": 50,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "85239dab-a99c-4000-b9fb-27a612da1666",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 50,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-1UMD",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "refund",
+                "paymentMethod": "cash",
+                "subtotalCents": -5000,
+                "discountCents": 0,
+                "totalCents": -5000,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": "26d28255-9c46-4ee4-9b76-66614c5f27e1",
+                "refundReason": "Not delivered"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "1dc84eee-b11f-49d5-ac43-bace0bb1c601",
+              "local_rev": 51,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "1dc84eee-b11f-49d5-ac43-bace0bb1c601",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 51,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "85239dab-a99c-4000-b9fb-27a612da1666",
+                "productId": null,
+                "itemName": "Delivery",
+                "quantity": -1,
+                "unitPriceCents": 5000,
+                "costPriceCents": 0,
+                "lineTotalCents": -5000,
+                "refundOfItemId": "4be22774-95bb-4b76-88e3-9c7c6446ba65"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "refund_partial_mpesa_sale_in_two_parts",
+      "what": "An M-Pesa sale of three widgets: one refunded and put back, then the other two refunded as damaged (not put back).",
+      "context": {
+        "deviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+        "cashierId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+        "managerId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+        "products": [
+          {
+            "id": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T12:51:03.199000Z",
+            "deletedAt": null,
+            "localRev": 6,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Widget",
+            "name": "Widget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 10000,
+            "wholesalePriceCents": 10000,
+            "costPriceCents": 6000,
+            "stockQty": 18,
+            "reorderLevel": 2,
+            "status": "active"
+          },
+          {
+            "id": "4419a896-ac23-445f-8135-4c5a507163c7",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T12:51:03.052000Z",
+            "deletedAt": null,
+            "localRev": 8,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Gadget",
+            "name": "Gadget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 25050,
+            "wholesalePriceCents": 25050,
+            "costPriceCents": 15000,
+            "stockQty": 20,
+            "reorderLevel": 2,
+            "status": "active"
+          }
+        ],
+        "users": [
+          {
+            "id": "39b1868a-8057-4ff2-a580-ed400bb9316a",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 10,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$hKYrLJ69kZOKqbfeywon5uLMGf2y7oovN8d8Kn9/B9qPuT8tGrXGG",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 11,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000002",
+            "name": "Manager",
+            "username": "manager",
+            "email": null,
+            "passwordHash": "$2a$10$tfWKlSDtfasg4RtQby5Aie94kSIbL9NhRAxybRCBqxQMbIlA8Ng3K",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 12,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000003",
+            "name": "Cashier",
+            "username": "cashier",
+            "email": null,
+            "passwordHash": "$2a$10$1WUVc95dvbxAHfLCH92QGuC3CK5kMQTOLH5CPgtR1C0WxwhteBX9u",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "bd33c346-a871-438d-ba22-45e713e0d71b",
+              "local_rev": 23,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "bd33c346-a871-438d-ba22-45e713e0d71b",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 23,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-F7S7",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "customerName": "Mama Njeri",
+                "customerPhone": "0712345678",
+                "saleType": "retail",
+                "paymentMethod": "mpesa_manual",
+                "subtotalCents": 30000,
+                "discountCents": 0,
+                "totalCents": 30000,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": null,
+                "refundReason": null
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "cf285062-2175-4b44-bb5e-fd9677d498ad",
+              "local_rev": 24,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "cf285062-2175-4b44-bb5e-fd9677d498ad",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 24,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "bd33c346-a871-438d-ba22-45e713e0d71b",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": 3,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": 30000,
+                "refundOfItemId": null
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "b4b11775-cc04-4e0a-9b61-1eee669fb562",
+              "local_rev": 25,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "b4b11775-cc04-4e0a-9b61-1eee669fb562",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 25,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "movementType": "sale",
+                "quantity": -3,
+                "note": "Sale A1A486-20261116090000-F7S7"
+              }
+            },
+            {
+              "table_name": "payment_records",
+              "row_id": "4a94958c-a336-4417-890c-f180e144b7bf",
+              "local_rev": 26,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "4a94958c-a336-4417-890c-f180e144b7bf",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 26,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "bd33c346-a871-438d-ba22-45e713e0d71b",
+                "method": "mpesa_manual",
+                "amountCents": 30000,
+                "referenceNote": null,
+                "status": "paid"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "322a27dd-2717-4194-aab1-b14587905d85",
+              "local_rev": 27,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "322a27dd-2717-4194-aab1-b14587905d85",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 27,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-14ID",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "customerName": "Mama Njeri",
+                "customerPhone": "0712345678",
+                "saleType": "refund",
+                "paymentMethod": "mpesa_manual",
+                "subtotalCents": -10000,
+                "discountCents": 0,
+                "totalCents": -10000,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": "bd33c346-a871-438d-ba22-45e713e0d71b",
+                "refundReason": "Bent"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "8d987b53-cb55-4386-afc6-56b12672c771",
+              "local_rev": 28,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "8d987b53-cb55-4386-afc6-56b12672c771",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 28,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "322a27dd-2717-4194-aab1-b14587905d85",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": -1,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": -10000,
+                "refundOfItemId": "cf285062-2175-4b44-bb5e-fd9677d498ad"
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "25347c30-f7c6-46ef-91a0-0314d0f05df7",
+              "local_rev": 29,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "25347c30-f7c6-46ef-91a0-0314d0f05df7",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 29,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "movementType": "return",
+                "quantity": 1,
+                "note": "Refund A1A486-20261116090000-14ID"
+              }
+            },
+            {
+              "table_name": "payment_records",
+              "row_id": "958ada97-a16a-499f-a7ad-e844a40ee016",
+              "local_rev": 30,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "958ada97-a16a-499f-a7ad-e844a40ee016",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 30,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "322a27dd-2717-4194-aab1-b14587905d85",
+                "method": "mpesa_manual",
+                "amountCents": -10000,
+                "referenceNote": "Refund of A1A486-20261116090000-F7S7",
+                "status": "refunded"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 3,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "d5b925e3-1b24-4350-a04e-b3bbeb5738db",
+              "local_rev": 31,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "d5b925e3-1b24-4350-a04e-b3bbeb5738db",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 31,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-O7VO",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "customerName": "Mama Njeri",
+                "customerPhone": "0712345678",
+                "saleType": "refund",
+                "paymentMethod": "mpesa_manual",
+                "subtotalCents": -20000,
+                "discountCents": 0,
+                "totalCents": -20000,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": "bd33c346-a871-438d-ba22-45e713e0d71b",
+                "refundReason": "Damaged"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "a4f467a1-3099-4b53-bcf2-1fc12139813a",
+              "local_rev": 32,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "a4f467a1-3099-4b53-bcf2-1fc12139813a",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 32,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "d5b925e3-1b24-4350-a04e-b3bbeb5738db",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": -2,
+                "unitPriceCents": 10000,
+                "costPriceCents": 0,
+                "lineTotalCents": -20000,
+                "refundOfItemId": "cf285062-2175-4b44-bb5e-fd9677d498ad"
+              }
+            },
+            {
+              "table_name": "payment_records",
+              "row_id": "5b2c8760-c453-4675-9f8e-661378040a26",
+              "local_rev": 33,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "5b2c8760-c453-4675-9f8e-661378040a26",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 33,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "d5b925e3-1b24-4350-a04e-b3bbeb5738db",
+                "method": "mpesa_manual",
+                "amountCents": -20000,
+                "referenceNote": "Refund of A1A486-20261116090000-F7S7",
+                "status": "refunded"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "refund_whole_cash_sale",
+      "what": "A cash sale of two products, then the whole sale refunded and put back in stock.",
+      "context": {
+        "deviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+        "cashierId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+        "managerId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+        "products": [
+          {
+            "id": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T12:51:03.049000Z",
+            "deletedAt": null,
+            "localRev": 6,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Widget",
+            "name": "Widget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 10000,
+            "wholesalePriceCents": 10000,
+            "costPriceCents": 6000,
+            "stockQty": 20,
+            "reorderLevel": 2,
+            "status": "active"
+          },
+          {
+            "id": "4419a896-ac23-445f-8135-4c5a507163c7",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T12:51:03.052000Z",
+            "deletedAt": null,
+            "localRev": 8,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "sku": "SKU-Gadget",
+            "name": "Gadget",
+            "categoryId": "b29c2bba-fd9d-432d-b004-bf6351cbe0ba",
+            "imagePath": null,
+            "barcode": null,
+            "retailPriceCents": 25050,
+            "wholesalePriceCents": 25050,
+            "costPriceCents": 15000,
+            "stockQty": 20,
+            "reorderLevel": 2,
+            "status": "active"
+          }
+        ],
+        "users": [
+          {
+            "id": "39b1868a-8057-4ff2-a580-ed400bb9316a",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 10,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$hKYrLJ69kZOKqbfeywon5uLMGf2y7oovN8d8Kn9/B9qPuT8tGrXGG",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 11,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000002",
+            "name": "Manager",
+            "username": "manager",
+            "email": null,
+            "passwordHash": "$2a$10$tfWKlSDtfasg4RtQby5Aie94kSIbL9NhRAxybRCBqxQMbIlA8Ng3K",
+            "phone": null,
+            "status": "active"
+          },
+          {
+            "id": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+            "createdAt": "2026-11-16T09:00:00.000Z",
+            "updatedAt": "2026-11-16T09:00:00.000Z",
+            "deletedAt": null,
+            "localRev": 12,
+            "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000003",
+            "name": "Cashier",
+            "username": "cashier",
+            "email": null,
+            "passwordHash": "$2a$10$1WUVc95dvbxAHfLCH92QGuC3CK5kMQTOLH5CPgtR1C0WxwhteBX9u",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "6a273375-c50a-4469-a7b5-e5d11814121d",
+              "local_rev": 13,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "6a273375-c50a-4469-a7b5-e5d11814121d",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 13,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-QZR1",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "retail",
+                "paymentMethod": "cash",
+                "subtotalCents": 45050,
+                "discountCents": 0,
+                "totalCents": 45050,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": null,
+                "refundReason": null
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "055924b5-3c19-4b07-bf73-c3a77a6b4ee5",
+              "local_rev": 14,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "055924b5-3c19-4b07-bf73-c3a77a6b4ee5",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 14,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "6a273375-c50a-4469-a7b5-e5d11814121d",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": 2,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": 20000,
+                "refundOfItemId": null
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "dfbff3da-6dea-420d-aaf6-8716b49defbd",
+              "local_rev": 15,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "dfbff3da-6dea-420d-aaf6-8716b49defbd",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 15,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "6a273375-c50a-4469-a7b5-e5d11814121d",
+                "productId": "4419a896-ac23-445f-8135-4c5a507163c7",
+                "itemName": "Gadget",
+                "quantity": 1,
+                "unitPriceCents": 25050,
+                "costPriceCents": 15000,
+                "lineTotalCents": 25050,
+                "refundOfItemId": null
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "cc14351c-ad3e-49ba-a2ca-fb0942a0a707",
+              "local_rev": 16,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "cc14351c-ad3e-49ba-a2ca-fb0942a0a707",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 16,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "movementType": "sale",
+                "quantity": -2,
+                "note": "Sale A1A486-20261116090000-QZR1"
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "915361d1-8177-4989-94cf-767cb6efbfc7",
+              "local_rev": 17,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "915361d1-8177-4989-94cf-767cb6efbfc7",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 17,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "4419a896-ac23-445f-8135-4c5a507163c7",
+                "userId": "6ebe2b26-9b81-485c-8e3d-e288765b2703",
+                "movementType": "sale",
+                "quantity": -1,
+                "note": "Sale A1A486-20261116090000-QZR1"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "changes": [
+            {
+              "table_name": "sales",
+              "row_id": "e03dee25-8304-4b09-a4da-8a73c6353171",
+              "local_rev": 18,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "e03dee25-8304-4b09-a4da-8a73c6353171",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 18,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleNumber": "A1A486-20261116090000-6OYE",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "customerName": "Mama Njeri",
+                "customerPhone": null,
+                "saleType": "refund",
+                "paymentMethod": "cash",
+                "subtotalCents": -45050,
+                "discountCents": 0,
+                "totalCents": -45050,
+                "status": "paid",
+                "cashReceivedCents": null,
+                "refundOfSaleId": "6a273375-c50a-4469-a7b5-e5d11814121d",
+                "refundReason": "Wrong goods"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "f5ded690-6d28-4ecd-83b8-ed50b14eca50",
+              "local_rev": 19,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "f5ded690-6d28-4ecd-83b8-ed50b14eca50",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 19,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "e03dee25-8304-4b09-a4da-8a73c6353171",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "itemName": "Widget",
+                "quantity": -2,
+                "unitPriceCents": 10000,
+                "costPriceCents": 6000,
+                "lineTotalCents": -20000,
+                "refundOfItemId": "055924b5-3c19-4b07-bf73-c3a77a6b4ee5"
+              }
+            },
+            {
+              "table_name": "sale_items",
+              "row_id": "0d96e01e-e6d7-4676-9e00-c585d8b002af",
+              "local_rev": 20,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "0d96e01e-e6d7-4676-9e00-c585d8b002af",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 20,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "saleId": "e03dee25-8304-4b09-a4da-8a73c6353171",
+                "productId": "4419a896-ac23-445f-8135-4c5a507163c7",
+                "itemName": "Gadget",
+                "quantity": -1,
+                "unitPriceCents": 25050,
+                "costPriceCents": 15000,
+                "lineTotalCents": -25050,
+                "refundOfItemId": "dfbff3da-6dea-420d-aaf6-8716b49defbd"
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "cdb3f2a4-cd63-4494-9132-eb350c214efa",
+              "local_rev": 21,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "cdb3f2a4-cd63-4494-9132-eb350c214efa",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 21,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "5b51e3ab-178d-4a65-85be-acbc3fab721c",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "movementType": "return",
+                "quantity": 2,
+                "note": "Refund A1A486-20261116090000-6OYE"
+              }
+            },
+            {
+              "table_name": "stock_movements",
+              "row_id": "5d759579-573f-4bee-9b97-d5350c59faf8",
+              "local_rev": 22,
+              "updated_at": "2026-11-16T09:00:00.000Z",
+              "payload": {
+                "id": "5d759579-573f-4bee-9b97-d5350c59faf8",
+                "createdAt": "2026-11-16T09:00:00.000Z",
+                "updatedAt": "2026-11-16T09:00:00.000Z",
+                "deletedAt": null,
+                "localRev": 22,
+                "createdByDeviceId": "a1a48616-7e5e-485f-a4a1-09aa4fd9e4d9",
+                "syncState": "local_only",
+                "productId": "4419a896-ac23-445f-8135-4c5a507163c7",
+                "userId": "48a4e225-a907-4379-9047-6bf3a93a7fab",
+                "movementType": "return",
+                "quantity": 1,
+                "note": "Refund A1A486-20261116090000-6OYE"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

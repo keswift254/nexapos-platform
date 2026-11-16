@@ -1,0 +1,242 @@
+{
+  "generated_by": "test/tool/expense_contract_fixtures_test.dart",
+  "scenarios": [
+    {
+      "name": "expense_created_then_deleted",
+      "what": "An expense that is deleted afterwards (a soft delete: deletedAt and updatedAt set, a new revision).",
+      "context": {
+        "deviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+        "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+        "users": [
+          {
+            "id": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+            "createdAt": "2026-11-13T11:39:55.547224Z",
+            "updatedAt": "2026-11-13T11:39:55.547224Z",
+            "deletedAt": null,
+            "localRev": 5,
+            "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$irrelevantirrelevantirrelevantirrelevantirrelevan",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "expenses",
+              "row_id": "f1e6b725-451b-4d60-8f75-e4af264e268c",
+              "local_rev": 9,
+              "updated_at": "2026-11-13T11:39:55.647800Z",
+              "payload": {
+                "id": "f1e6b725-451b-4d60-8f75-e4af264e268c",
+                "createdAt": "2026-11-13T11:39:55.647800Z",
+                "updatedAt": "2026-11-13T11:39:55.647800Z",
+                "deletedAt": null,
+                "localRev": 9,
+                "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+                "syncState": "local_only",
+                "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+                "expenseDate": "2026-11-05",
+                "title": "Wrong entry",
+                "amountCents": 7500,
+                "note": "typo"
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "changes": [
+            {
+              "table_name": "expenses",
+              "row_id": "f1e6b725-451b-4d60-8f75-e4af264e268c",
+              "local_rev": 10,
+              "updated_at": "2026-11-13T11:39:55.651803Z",
+              "payload": {
+                "id": "f1e6b725-451b-4d60-8f75-e4af264e268c",
+                "createdAt": "2026-11-13T11:39:55.647800Z",
+                "updatedAt": "2026-11-13T11:39:55.651803Z",
+                "deletedAt": "2026-11-13T11:39:55.651803Z",
+                "localRev": 10,
+                "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+                "syncState": "local_only",
+                "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+                "expenseDate": "2026-11-05",
+                "title": "Wrong entry",
+                "amountCents": 7500,
+                "note": "typo"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "expense_with_trimmed_name",
+      "what": "The name is trimmed before it is stored.",
+      "context": {
+        "deviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+        "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+        "users": [
+          {
+            "id": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+            "createdAt": "2026-11-13T11:39:55.547224Z",
+            "updatedAt": "2026-11-13T11:39:55.547224Z",
+            "deletedAt": null,
+            "localRev": 5,
+            "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$irrelevantirrelevantirrelevantirrelevantirrelevan",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "expenses",
+              "row_id": "67a48d6f-b0d2-4cc8-93ad-695dffbb959b",
+              "local_rev": 8,
+              "updated_at": "2026-11-13T11:39:55.639287Z",
+              "payload": {
+                "id": "67a48d6f-b0d2-4cc8-93ad-695dffbb959b",
+                "createdAt": "2026-11-13T11:39:55.639287Z",
+                "updatedAt": "2026-11-13T11:39:55.639287Z",
+                "deletedAt": null,
+                "localRev": 8,
+                "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+                "syncState": "local_only",
+                "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+                "expenseDate": "2026-01-31",
+                "title": "Packaging",
+                "amountCents": 99,
+                "note": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "expense_with_user_and_note",
+      "what": "An expense entered by a logged-in user, with a note.",
+      "context": {
+        "deviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+        "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+        "users": [
+          {
+            "id": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+            "createdAt": "2026-11-13T11:39:55.547224Z",
+            "updatedAt": "2026-11-13T11:39:55.547224Z",
+            "deletedAt": null,
+            "localRev": 5,
+            "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$irrelevantirrelevantirrelevantirrelevantirrelevan",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "expenses",
+              "row_id": "3f0e5dca-85fa-46e4-ada3-4d5d382482ea",
+              "local_rev": 6,
+              "updated_at": "2026-11-13T11:39:55.598083Z",
+              "payload": {
+                "id": "3f0e5dca-85fa-46e4-ada3-4d5d382482ea",
+                "createdAt": "2026-11-13T11:39:55.598083Z",
+                "updatedAt": "2026-11-13T11:39:55.598083Z",
+                "deletedAt": null,
+                "localRev": 6,
+                "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+                "syncState": "local_only",
+                "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+                "expenseDate": "2026-11-05",
+                "title": "Transport",
+                "amountCents": 250050,
+                "note": "Delivery to Kisumu"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "expense_without_user_or_note",
+      "what": "An expense with no user recorded and no note (a blank note is stored as null).",
+      "context": {
+        "deviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+        "userId": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+        "users": [
+          {
+            "id": "f74ac7c7-ac90-4f54-8a44-c5f88bd5a263",
+            "createdAt": "2026-11-13T11:39:55.547224Z",
+            "updatedAt": "2026-11-13T11:39:55.547224Z",
+            "deletedAt": null,
+            "localRev": 5,
+            "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+            "syncState": "local_only",
+            "roleId": "00000000-0000-4000-8000-000000000001",
+            "name": "Owner",
+            "username": "owner",
+            "email": null,
+            "passwordHash": "$2a$10$irrelevantirrelevantirrelevantirrelevantirrelevan",
+            "phone": null,
+            "status": "active"
+          }
+        ]
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "changes": [
+            {
+              "table_name": "expenses",
+              "row_id": "ef1e0dbe-dee7-49be-b634-ce4bdeebf7bf",
+              "local_rev": 7,
+              "updated_at": "2026-11-13T11:39:55.629749Z",
+              "payload": {
+                "id": "ef1e0dbe-dee7-49be-b634-ce4bdeebf7bf",
+                "createdAt": "2026-11-13T11:39:55.629749Z",
+                "updatedAt": "2026-11-13T11:39:55.629749Z",
+                "deletedAt": null,
+                "localRev": 7,
+                "createdByDeviceId": "51e9906b-2d41-4be4-83d3-2416e3ae184f",
+                "syncState": "local_only",
+                "userId": null,
+                "expenseDate": "2026-11-05",
+                "title": "Water",
+                "amountCents": 15000,
+                "note": null
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

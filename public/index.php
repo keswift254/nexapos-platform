@@ -19,6 +19,7 @@ use Platform\Core\InviteCode;
 use Platform\Services\PaystackClient;
 use Platform\Services\LiteCatalog;
 use Platform\Services\LiteReport;
+use Platform\Services\LiteSale;
 use Platform\Services\SyncGuard;
 use Platform\Services\SyncGuardViolation;
 use Platform\Services\PaymentReconciler;
@@ -1610,6 +1611,7 @@ if ($action === 'push_changes' && $method === 'POST') {
                     $itemsOfSale->fetchAll(PDO::FETCH_COLUMN)
                 ), 'is_array'));
             };
+            $refundsOf = static fn (string $saleId): array => LiteSale::refundsOf($pdo, (int) $client['shop_id'], $saleId);
             $newChanges = [];
             foreach ($changes as $candidate) {
                 $alreadyRecorded = false;
@@ -1622,7 +1624,7 @@ if ($action === 'push_changes' && $method === 'POST') {
                 }
             }
             try {
-                SyncGuard::check($newChanges, (string) $client['device_id'], $storedRow, $storedItems);
+                SyncGuard::check($newChanges, (string) $client['device_id'], $storedRow, $storedItems, $refundsOf);
             } catch (SyncGuardViolation $violation) {
                 throw new \RuntimeException($violation->getMessage());
             }
@@ -1832,6 +1834,24 @@ if ($action === 'lite_report' && $method === 'GET') {
         'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
         'report' => LiteReport::build($pdo, (int) $client['shop_id'], $fromUtc, $toUtc, $fromDate, $toDate, ($_GET['records'] ?? '') === '1'),
     ]);
+}
+
+// One sale of the shop with its lines and what is still left to refund on each (see LiteSale): what the lite till needs to
+// offer a refund of a sale that any device of the shop made. Read-only.
+if ($action === 'lite_sale' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    if ($client['channel'] !== 'lite') {
+        jsonResponse(['success' => false, 'message' => 'The shop sale view is only for lite tills.'], 403);
+    }
+    $saleId = (string) ($_GET['id'] ?? '');
+    if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $saleId) !== 1) {
+        jsonResponse(['success' => false, 'message' => 'id must be the id of a sale.'], 422);
+    }
+    $found = LiteSale::find($pdo, (int) $client['shop_id'], $saleId);
+    if ($found === null) {
+        jsonResponse(['success' => false, 'message' => 'The shop has no such sale.'], 404);
+    }
+    jsonResponse(array_merge(['success' => true, 'shop_id' => (int) $client['shop_id'], 'server_time' => gmdate('Y-m-d\TH:i:s\Z')], $found));
 }
 
 // The lite till's dashboard: sales, transactions, profit and expenses for each of several consecutive periods (today,

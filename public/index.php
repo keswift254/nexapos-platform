@@ -544,8 +544,14 @@ if ($action === 'payment_inbox_ingest' && $method === 'POST') {
         // An iPhone Shortcut may send a form instead of JSON.
         $body = $_POST;
     }
-    $key = $body['key'] ?? '';
-    $text = $body['text'] ?? '';
+    // The field names are typed by hand on the phone, and an iPhone writes the first letter as a capital by itself: "Key",
+    // "TEXT " and "key" all mean the same field.
+    $named = [];
+    foreach ($body as $name => $value) {
+        $named[strtolower(trim((string) $name))] ??= $value;
+    }
+    $key = $named['key'] ?? '';
+    $text = $named['text'] ?? '';
     if (!is_string($key) || !is_string($text) || trim($text) === '') {
         jsonResponse(['success' => false, 'reason' => 'bad_request', 'message' => 'Send "key" (this phone\'s key) and "text" (the SMS).'], 422);
     }

@@ -181,6 +181,14 @@ $formAnswer = json_decode((string) curl_exec($form), true);
 curl_close($form);
 check(($formAnswer['recorded'] ?? false) === true, 'A message sent as a form was not recorded: ' . json_encode($formAnswer));
 
+// field names typed on an iPhone come with a capital first letter (and sometimes a space): they still count
+$capitals = $inbox('payment_inbox_ingest', 'POST', ['Key' => $phoneKey, 'Text ' => 'CAP1TALS1A Confirmed.You have received Ksh20.00 from C A on 17/11/26 at 9:12 AM'], []);
+check(($capitals['body']['recorded'] ?? false) === true, 'Field names "Key" and "Text " were not understood: ' . $capitals['raw']);
+$shouting = $inbox('payment_inbox_ingest', 'POST', ['KEY' => $phoneKey, 'TEXT' => 'CAP1TALS2B Confirmed.You have received Ksh21.00 from C B on 17/11/26 at 9:13 AM'], []);
+check(($shouting['body']['recorded'] ?? false) === true, 'Field names in capitals were not understood: ' . $shouting['raw']);
+check($inbox('payment_inbox_ingest', 'POST', ['Key' => $phoneKey, 'Message' => 'CAP1TALS3C Confirmed.You have received Ksh22.00 from C C'], [])['status'] === 422, 'A body without a text field was not refused.');
+$pdo->exec("DELETE FROM payment_inbox WHERE mpesa_code IN ('CAP1TALS1A', 'CAP1TALS2B')");
+
 // the same code in another shop is that shop's own
 $elsewhereKey = $elsewhere['body']['key'];
 check($pass($elsewhereKey, str_replace('Ksh500.00', 'Ksh123.00', $tillSms))['body']['recorded'] === true, 'Another shop could not record a code this shop also has.');

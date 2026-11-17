@@ -331,6 +331,30 @@ final class PaymentInbox
         return ['confirmed' => $payment['message_received'], 'payment' => $payment];
     }
 
+    /**
+     * Archives a payment that arrived (it is no longer suggested at checkout on any till of the shop) or, with [$archived]
+     * false, suggests it again. Nothing else changes: it stays in the list of payments received, and its code can still be
+     * typed and used. Null when the shop has no message for that code (a code only typed at a till has nothing to archive).
+     *
+     * @return array<string,mixed>|null
+     */
+    public static function archive(PDO $pdo, int $shopId, int $clientId, string $code, bool $archived): ?array
+    {
+        if ($archived) {
+            // Archiving twice keeps the first time and who did it.
+            $pdo->prepare(
+                'UPDATE payment_inbox SET archived_at = COALESCE(archived_at, UTC_TIMESTAMP()), archived_by_client_id = COALESCE(archived_by_client_id, ?)
+                 WHERE shop_id = ? AND mpesa_code = ? AND received_at IS NOT NULL'
+            )->execute([$clientId, $shopId, $code]);
+        } else {
+            $pdo->prepare(
+                'UPDATE payment_inbox SET archived_at = NULL, archived_by_client_id = NULL WHERE shop_id = ? AND mpesa_code = ? AND received_at IS NOT NULL'
+            )->execute([$shopId, $code]);
+        }
+        $payment = self::find($pdo, $shopId, $code);
+        return $payment !== null && $payment['message_received'] ? $payment : null;
+    }
+
     /** Frees a code a sale had used (the sale was cancelled). False when that sale does not hold the code. */
     public static function release(PDO $pdo, int $shopId, string $code, string $saleId): bool
     {
@@ -365,6 +389,7 @@ final class PaymentInbox
             'message' => $row['message'],
             'received_at' => self::iso($row['received_at']),
             'phone_label' => $received ? (string) ($row['source_label'] ?? '') : null,
+            'archived_at' => self::iso($row['archived_at'] ?? null),
             'used' => $row['claimed_sale_id'] === null ? null : [
                 'sale_id' => (string) $row['claimed_sale_id'],
                 'sale_number' => (string) $row['claimed_sale_number'],

@@ -364,6 +364,9 @@ CREATE TABLE IF NOT EXISTS payment_inbox (
     claimed_amount_cents BIGINT NULL,
     claimed_by_client_id INT NULL,
     claimed_at DATETIME NULL,
+    -- see sql/migrations/20261118_001_payment_inbox_archive.sql
+    archived_at DATETIME NULL,
+    archived_by_client_id INT NULL,
     UNIQUE INDEX uq_payment_inbox_code (shop_id, mpesa_code),
     INDEX idx_payment_inbox_received (shop_id, received_at),
     INDEX idx_payment_inbox_claimed (shop_id, claimed_at),

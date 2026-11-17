@@ -643,6 +643,20 @@ if ($action === 'payment_inbox_claim' && $method === 'POST') {
     jsonResponse(['success' => true, 'confirmed' => $claimed['confirmed'], 'payment' => $claimed['payment']]);
 }
 
+// Archives a payment that arrived - it is no longer suggested at checkout on any till - or, with "archived": false, suggests
+// it again. It stays in the list of payments received, and its code can still be typed. Any device of the shop may do it.
+if ($action === 'payment_inbox_archive' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $code = paymentInboxCode($body['code'] ?? '');
+    $archived = ($body['archived'] ?? true) !== false;
+    $payment = PaymentInbox::archive($pdo, (int) $client['shop_id'], (int) $client['id'], $code, $archived);
+    if ($payment === null) {
+        jsonResponse(['success' => false, 'reason' => 'not_found', 'message' => 'The shop has no M-Pesa payment with this code.'], 404);
+    }
+    jsonResponse(['success' => true, 'payment' => $payment]);
+}
+
 // Frees a code a sale had used (the sale was cancelled before it was finished).
 if ($action === 'payment_inbox_release' && $method === 'POST') {
     $client = Auth::requireClient($pdo);

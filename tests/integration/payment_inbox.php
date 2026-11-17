@@ -280,6 +280,37 @@ $blind = $claim($tillAuth, 'UNR3ADABL1', $saleB, 1000);
 check($blind['status'] === 409 && $blind['body']['reason'] === 'amount_unknown', 'A payment of unknown amount was used without a warning: ' . $blind['raw']);
 check($claim($tillAuth, 'UNR3ADABL1', '30000000-0000-4000-8000-0000000000c9', 1000, ['accept_amount' => true])['status'] === 200, 'A payment of unknown amount could not be used knowingly.');
 
+// ---- archiving: no longer suggested at checkout, still in the list, the code still usable ----------------------------
+$archive = static fn (array $headers, string $code, ?bool $archived = null) => $inbox('payment_inbox_archive', 'POST', $archived === null ? ['code' => $code] : ['code' => $code, 'archived' => $archived], $headers);
+check($pass($phoneKey, 'ARCH1VEME1 Confirmed.You have received Ksh40.00 from OLD PAYER 0700000444 on 17/11/26 at 9:45 AM')['body']['recorded'] === true, 'Could not record the payment to archive.');
+check($archive([], 'ARCH1VEME1')['status'] === 401, 'A payment was archived with no device key.');
+check($archive($tillAuth, 'not a code')['status'] === 422, 'Something that is not a code was archived.');
+check($archive($tillAuth, 'N0SUCHC0DE')['status'] === 404, 'A code the shop never received was archived.');
+check($archive($otherAuth, 'ARCH1VEME1')['status'] === 404, "Another shop archived this shop's payment.");
+$typedOnly = $claim($tillAuth, 'TYP3D0NLY1', '30000000-0000-4000-8000-0000000000ca', 500);
+check($typedOnly['status'] === 200 && $archive($tillAuth, 'TYP3D0NLY1')['status'] === 404, 'A code only typed at a till (no message) was archived.');
+$beforeArchive = $inbox('payment_inbox_check', 'GET', null, $tillAuth, ['code' => 'ARCH1VEME1'])['body']['payment'];
+check(array_key_exists('archived_at', $beforeArchive) && $beforeArchive['archived_at'] === null, 'A payment that was never archived should say archived_at null: ' . json_encode($beforeArchive));
+$archived = $archive($tillAuth, ' arch1 veme1 ');
+check($archived['status'] === 200 && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', (string) $archived['body']['payment']['archived_at']) === 1, 'The payment was not archived: ' . $archived['raw']);
+$firstArchive = $archived['body']['payment']['archived_at'];
+$stored = $pdo->query("SELECT archived_by_client_id FROM payment_inbox WHERE mpesa_code = 'ARCH1VEME1'")->fetchColumn();
+check((int) $stored === (int) $pdo->query("SELECT id FROM clients WHERE device_id = 'inbox-lite-till'")->fetchColumn(), 'Which device archived it is not kept.');
+$pdo->exec("UPDATE payment_inbox SET archived_at = archived_at - INTERVAL 1 HOUR WHERE mpesa_code = 'ARCH1VEME1'");
+$again = $archive($ownerAuth, 'ARCH1VEME1');
+check($again['status'] === 200 && $again['body']['payment']['archived_at'] !== null && $again['body']['payment']['archived_at'] < $firstArchive, 'Archiving twice should keep the first time: ' . $again['raw']);
+check((int) $pdo->query("SELECT archived_by_client_id FROM payment_inbox WHERE mpesa_code = 'ARCH1VEME1'")->fetchColumn() === (int) $stored, 'Archiving twice should keep who did it first.');
+$listedArchived = array_values(array_filter($inbox('payment_inbox_list', 'GET', null, $tillAuth)['body']['payments'], static fn ($p) => $p['code'] === 'ARCH1VEME1'));
+check(count($listedArchived) === 1 && $listedArchived[0]['archived_at'] !== null, 'An archived payment must stay in the list, marked archived.');
+$suggested = $archive($tillAuth, 'ARCH1VEME1', false);
+check($suggested['status'] === 200 && $suggested['body']['payment']['archived_at'] === null, 'The payment could not be suggested again: ' . $suggested['raw']);
+check($pdo->query("SELECT archived_by_client_id FROM payment_inbox WHERE mpesa_code = 'ARCH1VEME1'")->fetchColumn() === null, 'Suggesting again should forget who archived it.');
+check($archive($tillAuth, 'ARCH1VEME1')['status'] === 200, 'Could not archive it again.');
+// the code of an archived payment can still be typed and used, once
+$usedArchived = $claim($ownerAuth, 'ARCH1VEME1', '30000000-0000-4000-8000-0000000000cb', 4000);
+check($usedArchived['status'] === 200 && $usedArchived['body']['payment']['archived_at'] !== null, 'An archived payment could not be used by typing its code: ' . $usedArchived['raw']);
+check($claim($tillAuth, 'ARCH1VEME1', '30000000-0000-4000-8000-0000000000cc', 4000)['status'] === 409, 'An archived payment was used twice.');
+
 // two tills, the same code, the same moment: one sale gets it
 $race = static function (string $code, int $amount) use ($baseUrl, $tillAuth, $ownerAuth): array {
     $answers = concurrentRequests($baseUrl, [

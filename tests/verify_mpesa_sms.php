@@ -106,6 +106,64 @@ $long = MpesaSms::parse('SJK9LONG6F Confirmed. You have received Ksh10.00 from '
 check($long !== null && mb_strlen($long['payerName']) === 120, 'a very long name is cut to 120 characters');
 check($long !== null && mb_strlen($long['message']) === 500, 'the kept message is cut to 500 characters');
 
+// --- M-PESA Jumbe: the alert a till sends the phones its owner nominated (2026-11-19, the owner's screenshot; the shop
+//     name, till number, payer and date were covered in it, so those are made up here) -----------------------------------
+$jumbeSms = "UKJB430TS5 Confirmed.\nAmount: Ksh60.00.\nPaid to: MAMA MBOGA KUNDI\nTILL: 5678900\nFrom: NK_74\nDate: 2026-11-19 at 18:27:37.\n\nMPESA Jumbe! A public-friendly SMS you can display without exposing personal MPESA information.";
+$jumbe = MpesaSms::parse($jumbeSms);
+check($jumbe !== null, 'jumbe: the alert is a payment received');
+same($jumbe['kind'] ?? null, 'jumbe', 'jumbe: marked as a Jumbe alert');
+same($jumbe['code'] ?? null, 'UKJB430TS5', 'jumbe: the code');
+same($jumbe['amountCents'] ?? null, 6000, 'jumbe: Ksh60.00 is 6000 cents');
+same($jumbe['payerName'] ?? null, 'NK_74', 'jumbe: who paid (their JumbeID)');
+check($jumbe !== null && $jumbe['payerPhone'] === null, 'jumbe: no number given');
+same($jumbe['paidAtText'] ?? null, '2026-11-19 18:27:37', 'jumbe: when, as the message says it');
+check($jumbe !== null && $jumbe['accountRef'] === null, 'jumbe: a till has no account number');
+check($jumbe !== null && strpos($jumbe['message'], 'Paid to: MAMA MBOGA KUNDI TILL: 5678900') !== false, 'jumbe: the message is kept as written, on one line');
+same(MpesaSms::spentCode($jumbeSms), null, 'jumbe: the alert is not money this phone paid out');
+
+$jumbeName = MpesaSms::parse('UKJB430TS6 Confirmed. Amount: Ksh1,250.50. Paid to: SHOP TILL: 123456 From: JOHN DOE 0712***678 Date: 19/11/26 at 6:27 PM. MPESA Jumbe!');
+same($jumbeName['amountCents'] ?? null, 125050, 'jumbe: Ksh1,250.50');
+same($jumbeName['payerName'] ?? null, 'JOHN DOE', 'jumbe: a name in From');
+same($jumbeName['payerPhone'] ?? null, '0712***678', 'jumbe: a hidden number in From');
+same($jumbeName['paidAtText'] ?? null, '19/11/26 6:27 PM', 'jumbe: a day/month/year date with AM/PM');
+
+$jumbePaybill = MpesaSms::parse('UKJB430TS7 Confirmed. Amount: KES 2,350.00. Paybill: 400200 Account: INV-1042 From: JW_12 Date: 19-11-2026 Time: 09:05:12');
+same($jumbePaybill['amountCents'] ?? null, 235000, 'jumbe paybill: "KES 2,350.00"');
+same($jumbePaybill['accountRef'] ?? null, 'INV-1042', 'jumbe paybill: the account number');
+same($jumbePaybill['payerName'] ?? null, 'JW_12', 'jumbe paybill: who paid, stopping at the next label');
+same($jumbePaybill['paidAtText'] ?? null, '19-11-2026 09:05:12', 'jumbe paybill: a separate Time');
+
+$jumbeWords = MpesaSms::parse('UKJB430TS8 Confirmed. Amount: Ksh500.00. Paid to: SHOP. TILL: 123456. From: AB_01. Date: 19 Nov 2026 at 10:00.');
+same($jumbeWords['payerName'] ?? null, 'AB_01', 'jumbe: a full stop after each part');
+same($jumbeWords['paidAtText'] ?? null, '19 Nov 2026 10:00', 'jumbe: a date with the month as a word');
+
+$jumbeNoAmount = MpesaSms::parse('UKJB430TS9 Confirmed. Amount: sixty. Paid to: SHOP TILL: 123456 From: NK_74');
+check($jumbeNoAmount !== null && $jumbeNoAmount['amountCents'] === null, 'jumbe: an amount that cannot be read is unknown, not guessed');
+
+$jumbeReceivedWord = MpesaSms::parse('UKJB431TS1 Confirmed. Payment received. Amount: Ksh75.00. TILL: 123456 From: NK_74 Date: 2026-11-19 at 18:30:00.');
+same($jumbeReceivedWord['kind'] ?? null, 'jumbe', 'jumbe: read as an alert even with the word "received" in it');
+same($jumbeReceivedWord['amountCents'] ?? null, 7500, 'jumbe: and its amount is still read');
+
+same(MpesaSms::parse('UKJB431TS2 Confirmed. Amount: Ksh60.00. Paid to: SHOP TILL: 123456 Date: 2026-11-19 at 18:27:37.'), null, 'jumbe: without who paid it is not read as a payment');
+same(MpesaSms::parse('UKJB431TS3 Confirmed. Amount: Ksh60.00. From: NK_74 Date: 2026-11-19 at 18:27:37.'), null, 'jumbe: without where it was paid it is not read as a payment');
+same(MpesaSms::parse('UKJB431TS4 Confirmed. Paid to: SHOP TILL: 123456 From: NK_74 Ksh60.00'), null, 'jumbe: without "Amount:" it is not read as a payment');
+
+// --- money the phone's owner PAID: never a payment received, and its code is remembered as paid out ------------------
+// The customer's Jumbe receipt, as Safaricom showed it (its FAQ, quoted by techweez.com 2026-10-06).
+$customerReceipt = 'UFAL477KQJ Confirmed. You sent: Ksh2,000.00. Received by: Petrol Station Till. TILL: 5678900. Your JumbeID: NK_74. Date: 2026-06-10 at 14:56:38.';
+same(MpesaSms::parse($customerReceipt), null, "the customer's Jumbe receipt is money paid out, not received (its \"Received by:\" must not count)");
+same(MpesaSms::spentCode($customerReceipt), 'UFAL477KQJ', "the customer's Jumbe receipt: its code is a payment this phone made");
+same(MpesaSms::parse('UFAL477KQK Confirmed. Amount: Ksh60.00. Paid to: SHOP TILL: 123456 From: NK_74. Your JumbeID: NK_74.'), null, 'labelled like an alert but saying "Your JumbeID": paid out');
+same(MpesaSms::parse('UFAL477KQL Confirmed. You paid: Ksh60.00. Paid to: SHOP TILL: 123456 From: NK_74'), null, 'labelled like an alert but saying "You paid": paid out');
+same(MpesaSms::spentCode('SJK1ABC2DE Confirmed. Ksh500.00 paid to NAIVAS. on 17/11/26 at 12:47 PM.New M-PESA balance is Ksh1,500.00.'), 'SJK1ABC2DE', 'a till payment the owner made: its code');
+same(MpesaSms::spentCode('SJK1ABC2DF Confirmed. Ksh500.00 sent to JANE DOE 0712345678 on 17/11/26 at 12:47 PM. New M-PESA balance is Ksh1,500.00.'), 'SJK1ABC2DF', 'money the owner sent: its code');
+same(MpesaSms::spentCode('SJK1ABC2DG Confirmed. Ksh500.00 sent to KPLC PREPAID for account 123 on 17/11/26 at 12:47 PM.'), 'SJK1ABC2DG', 'a paybill payment the owner made: its code');
+same(MpesaSms::spentCode("SJK1ABC2DE Confirmed.You have received Ksh1,500.00 from JOHN DOE 0712345678 on 17/11/26 at 12:47 PM"), null, 'a payment received is not paid out');
+same(MpesaSms::spentCode($balance), null, 'a balance message is not paid out');
+same(MpesaSms::spentCode('SJK1ABC2DE Confirmed.on 17/11/26 at 12:47 PMWithdraw Ksh500.00 from 123456 - AGENT New M-PESA balance is Ksh1,500.00.'), null, 'a withdrawal is not a payment to anyone');
+same(MpesaSms::spentCode('Hello. You sent Ksh500.00 to JANE.'), null, 'paid-out wording without a code is nothing');
+same($personal['kind'] ?? null, 'received', 'a message with "received" is marked as one');
+
 // --- codes as a cashier types them ----------------------------------------------------------------------------------
 same(MpesaSms::normalizeCode(' ukh3r3nltu '), 'UKH3R3NLTU', 'a typed code: capitals, spaces off');
 same(MpesaSms::normalizeCode('UKH3 R3NL-TU'), 'UKH3R3NLTU', 'a typed code: spaces and dashes inside are dropped');

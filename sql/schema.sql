@@ -383,3 +383,14 @@ CREATE TABLE IF NOT EXISTS payment_inbox_auth_failures (
     INDEX idx_payment_inbox_auth_failures (shop_id, failed_at),
     FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Codes of payments the shop phone itself made, kept 7 days, so an M-PESA Jumbe alert for one is never taken as a
+-- customer's payment. See sql/migrations/20261119_001_payment_inbox_spent.sql.
+CREATE TABLE IF NOT EXISTS payment_inbox_spent (
+    shop_id INT NOT NULL,
+    mpesa_code VARCHAR(16) NOT NULL,
+    seen_at DATETIME NOT NULL,
+    PRIMARY KEY (shop_id, mpesa_code),
+    INDEX idx_payment_inbox_spent_seen (seen_at),
+    FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

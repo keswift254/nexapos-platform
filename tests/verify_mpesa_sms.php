@@ -166,6 +166,35 @@ same(MpesaSms::parse('SJK1ABC2DF Confirmed. Ksh500.00 sent to JANE DOE 071234567
 same(MpesaSms::parse('SJK1ABC2DG Confirmed. Ksh500.00 sent to KPLC PREPAID for account 123 on 17/11/26 at 12:47 PM.'), null, 'a paybill payment the owner made is not money received');
 same($personal['kind'] ?? null, 'received', 'a message with "received" is marked as one');
 
+// --- a bank's message about money paid in through M-Pesa: Co-op Bank (the owner's screenshot, 2026-11-20; the name,
+//     amount, payer and account were covered in it, so those are made up here) ------------------------------------------
+$coopSms = "Dear MAMA MBOGA T/A NEXAPOS, you have received Ksh. 200.00 from JOHN KAMAU MUSU for 01192012345649 on 11/15/2026 at 17:32:35. MPESA Ref. UKFQV1WVG3..";
+$coop = MpesaSms::parse($coopSms);
+check($coop !== null, 'co-op: money received through M-Pesa is a payment received');
+same($coop['kind'] ?? null, 'bank', 'co-op: marked as a bank message');
+same($coop['code'] ?? null, 'UKFQV1WVG3', 'co-op: the M-Pesa code is the one after "MPESA Ref."');
+same($coop['amountCents'] ?? null, 20000, 'co-op: "Ksh. 200.00" is 20000 cents');
+same($coop['payerName'] ?? null, 'JOHN KAMAU MUSU', 'co-op: who paid, up to "for"');
+check($coop !== null && $coop['payerPhone'] === null, 'co-op: no number given');
+same($coop['accountRef'] ?? null, '01192012345649', 'co-op: the account it was paid into');
+same($coop['paidAtText'] ?? null, '11/15/2026 17:32:35', 'co-op: when, as the message says it (month/day/year)');
+check($coop !== null && strpos($coop['message'], 'MPESA Ref. UKFQV1WVG3') !== false, 'co-op: the message is kept as written');
+$coopLines = MpesaSms::parse("Dear MAMA MBOGA T/A NEXAPOS, you have\nreceived Ksh. 1,250.50 from 2547***45678 JOHN KAMAU\nMUSU for 0119****5649 on 11/15/2026 at\n17:32:35. MPESA Ref. UKFQV1WVG4.. Thank you for banking with us.");
+same($coopLines['amountCents'] ?? null, 125050, 'co-op: line breaks and a thousands comma');
+same($coopLines['payerName'] ?? null, 'JOHN KAMAU MUSU', 'co-op: a hidden number in front of the name is split off');
+same($coopLines['payerPhone'] ?? null, '2547***45678', 'co-op: and kept as the number');
+same($coopLines['accountRef'] ?? null, '0119****5649', 'co-op: a hidden account number; "for banking" later on is not an account');
+same($coopLines['code'] ?? null, 'UKFQV1WVG4', 'co-op: the code before the closing dots');
+same(MpesaSms::parse('Dear MAMA MBOGA, you have received Ksh 75 from JANE for 01192012345649 on 11/15/2026. M-PESA Ref: UKFQV1WVG5')['amountCents'] ?? null, 7500, 'co-op: "Ksh 75", "M-PESA Ref:" and a date with no time');
+$coopNoAccount = MpesaSms::parse('Dear MAMA MBOGA, you have received Ksh. 300.00 from JANE WANJIKU on 11/15/2026 at 10:00:00. MPESA Ref. UKFQV1WVG9. Thank you for banking with us.');
+same($coopNoAccount['payerName'] ?? null, 'JANE WANJIKU', 'co-op: who paid, up to the date when there is no "for"');
+check($coopNoAccount !== null && $coopNoAccount['accountRef'] === null, 'co-op: no account number given: "for banking" is not one');
+same(MpesaSms::parse('Dear MAMA MBOGA, you have received Ksh. 200.00 from JOHN for 01192012345649 on 11/15/2026 at 17:32:35.'), null, 'co-op: without the M-Pesa reference it is not read');
+same(MpesaSms::parse('Dear MAMA MBOGA, Ksh. 200.00 has been debited from 01192012345649 on 11/15/2026. MPESA Ref. UKFQV1WVG6'), null, 'co-op: money going out is not received');
+same(MpesaSms::parse('Dear MAMA MBOGA, you have sent Ksh. 200.00 to JOHN on 11/15/2026. MPESA Ref. UKFQV1WVG7. You have received a bonus.'), null, 'co-op: money the owner sent is never a payment');
+same(MpesaSms::parse('Dear MAMA MBOGA, you have received Ksh. 200.00 from JOHN. MPESA Ref. RECEIVEDOK'), null, 'co-op: a "reference" with no digits is not a code');
+same(MpesaSms::parse('Dear MAMA MBOGA, you have received a new statement. MPESA Ref. UKFQV1WVG8'), null, 'co-op: no amount received, no payment');
+
 // --- who the SMS came from: a person's number or email, or M-Pesa / a bank -------------------------------------------
 foreach (['+254 712 345 678', '+254712345678', '0712345678', '254712345678', '0712 345 678', '(0712) 345-678', '712345678', ' 0712.345.678 ', 'someone@icloud.com'] as $person) {
     check(MpesaSms::fromPerson($person), "a person's sender: '$person'");

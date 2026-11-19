@@ -287,6 +287,12 @@ check(($fromSender($senderKey, $sms('SND3NAME6P'), str_repeat('B', 60))['body'][
 check(($fromSender($senderKey, $sms('SND4BANK1F'), 'Equity Bank')['body']['recorded'] ?? false) === true, 'A message from a bank name was refused.');
 check(($fromSender($senderKey, $sms('SND4SHRT1G'), '40404')['body']['recorded'] ?? false) === true, 'A message from a short code was refused.');
 check(($fromSender($senderKey, $sms('SND4MPE2H'), 'M-PESA')['body']['recorded'] ?? false) === true, 'A message from M-PESA was refused.');
+// a bank's message about money paid in through M-Pesa (Co-op Bank): recorded under its M-Pesa code
+$coop = $fromSender($senderKey, 'Dear RIG SHOP T/A NEXAPOS, you have received Ksh. 250.00 from JOHN KAMAU for 01192000000049 on 11/20/2026 at 09:05:00. MPESA Ref. SND6COOP1Q..', 'Co-opBank');
+check(($coop['body']['recorded'] ?? false) === true, 'A Co-op Bank message was not recorded: ' . $coop['raw']);
+$coopRow = $pdo->query("SELECT amount_cents, payer_name, account_ref, paid_at_text FROM payment_inbox WHERE mpesa_code = 'SND6COOP1Q'")->fetch(PDO::FETCH_ASSOC);
+check($coopRow && (int) $coopRow['amount_cents'] === 25000 && $coopRow['payer_name'] === 'JOHN KAMAU' && $coopRow['account_ref'] === '01192000000049' && $coopRow['paid_at_text'] === '11/20/2026 09:05:00',
+    'The Co-op Bank payment was not stored as the message says: ' . json_encode($coopRow));
 // the check is per phone: the main phone still sends no sender, and still works
 check(($pass($phoneKey, $sms('SND5MAIN1J'))['body']['recorded'] ?? false) === true, "One phone's sender check stopped another phone.");
 $pdo->exec("DELETE FROM payment_inbox WHERE mpesa_code LIKE 'SND%'");

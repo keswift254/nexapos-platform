@@ -23,6 +23,9 @@ namespace Platform\Services;
  * paid it (an owner testing their own till). The CUSTOMER gets a Jumbe receipt of their own ("You sent: ... Received by:
  * ... Your JumbeID: ..."); that one, like every other message about money the phone's owner paid or sent, is never a
  * payment received.
+ *
+ * A BANK's message about money paid into the shop's bank account through M-Pesa (kind 'bank'; Co-op Bank so far) does not
+ * open with "<CODE> Confirmed": the M-Pesa code comes last, after "MPESA Ref." (see viaBank()).
  */
 final class MpesaSms
 {
@@ -37,20 +40,25 @@ final class MpesaSms
 
     /**
      * @return array{code:string,kind:string,amountCents:?int,payerName:?string,payerPhone:?string,accountRef:?string,paidAtText:?string,message:string}|null
-     *         kind: 'received' (the till's / paybill's / line's own message) or 'jumbe' (an M-PESA Jumbe payment alert)
+     *         kind: 'received' (the till's / paybill's / line's own message), 'jumbe' (an M-PESA Jumbe payment alert) or
+     *         'bank' (a bank's message about money paid in through M-Pesa)
      */
     public static function parse(string $raw): ?array
     {
-        $head = self::head($raw);
-        if ($head === null) {
+        $text = self::oneLine($raw);
+        if ($text === null) {
             return null;
         }
-        [$code, $text] = $head;
         // Money the phone's owner paid or sent - including the customer's own Jumbe receipt, whose "Received by:" would
         // otherwise read as a payment received - is never one.
         if (self::isPaidOut($text)) {
             return null;
         }
+        $head = self::head($text);
+        if ($head === null) {
+            return self::viaBank($text);
+        }
+        [$code, $text] = $head;
         // A Jumbe alert first: its labelled parts ("Amount:", "From:", "Paid to:") are never in the other messages, and
         // read as an ordinary message it would lose its amount should Safaricom ever put "received" in it.
         $jumbe = self::jumbeAlert($code, $text);
@@ -79,30 +87,91 @@ final class MpesaSms
         return preg_match('/^\+?\d{7,15}$/', $plain) === 1;
     }
 
-    /**
-     * The message as one line, and its code when it opens with "<CODE> Confirmed"; null when it is not such a message.
-     *
-     * @return array{0:string,1:string}|null
-     */
-    private static function head(string $raw): ?array
+    /** The message as one line with plain spaces (they arrive with non-breaking spaces, line breaks and doubled spaces). */
+    private static function oneLine(string $raw): ?string
     {
         if (strlen($raw) > self::MAX_LENGTH * 4) {
             return null;
         }
-        // One line, plain spaces (messages arrive with non-breaking spaces, line breaks and doubled spaces).
         $text = trim((string) preg_replace('/[\s\x{00A0}\x{2007}\x{202F}]+/u', ' ', $raw));
         if ($text === '' || mb_strlen($text) > self::MAX_LENGTH) {
             return null;
         }
+        return $text;
+    }
+
+    /**
+     * The message (one line) and its code when it opens with "<CODE> Confirmed"; null when it is not such a message.
+     *
+     * @return array{0:string,1:string}|null
+     */
+    private static function head(string $text): ?array
+    {
         if (preg_match('/^([A-Za-z0-9]{8,12})\s+Confirmed\b/i', $text, $head) !== 1) {
             return null;
         }
-        $code = strtoupper($head[1]);
-        // A real code has letters and digits; this keeps an ordinary word in front of "Confirmed" from passing as one.
-        if (preg_match('/[A-Z]/', $code) !== 1 || preg_match('/\d/', $code) !== 1) {
+        $code = self::realCode($head[1]);
+        return $code === null ? null : [$code, $text];
+    }
+
+    /** [$printed] in capitals when it can be an M-Pesa code: letters AND digits (an ordinary word never passes as one). */
+    private static function realCode(string $printed): ?string
+    {
+        $code = strtoupper($printed);
+        if (preg_match('/^[A-Z0-9]{8,12}$/', $code) !== 1 || preg_match('/[A-Z]/', $code) !== 1 || preg_match('/\d/', $code) !== 1) {
             return null;
         }
-        return [$code, $text];
+        return $code;
+    }
+
+    /**
+     * A bank's message about money paid into the shop's bank account through M-Pesa. Co-op Bank (the owner's screenshot,
+     * 2026-11-20): "Dear <ACCOUNT NAME>, you have received Ksh. 20.00 from <payer> for <account> on 11/15/2026 at 17:32:35.
+     * MPESA Ref. UKFQV1WVG3.." Read only when it has BOTH "received <amount>" and the M-Pesa reference: the payment is
+     * kept under that M-Pesa code - the one the customer's own M-Pesa message shows. The date (month/day/year here) is
+     * kept as written.
+     *
+     * @return array<string,mixed>|null
+     */
+    private static function viaBank(string $text): ?array
+    {
+        if (preg_match('/\bM-?PESA\s+Ref(?:erence)?\b\.?\s*(?:No\.?\s*)?:?\s*([A-Za-z0-9]{8,12})\b/i', $text, $ref) !== 1) {
+            return null;
+        }
+        $code = self::realCode($ref[1]);
+        if ($code === null || preg_match('/\breceived\s+' . self::MONEY . '/i', $text, $m) !== 1) {
+            return null;
+        }
+        $amount = self::cents($m[1]);
+
+        [$payerName, $payerPhone] = [null, null];
+        if (preg_match('/\breceived\s+' . self::MONEY . '\s+from\s+(.+?)(?=\s+for\s|\s+on\s+\d|\.\s|\.$|$)/i', $text, $m) === 1) {
+            [$payerName, $payerPhone] = self::who($m[2]);
+        }
+
+        $account = null;
+        if (preg_match('/\bfor\s+(?:A\/?C\.?\s*|account\s*(?:no\.?)?\s*)?([\d*][\dA-Za-z*\-\/#]{2,39})/i', $text, $m) === 1) {
+            $account = rtrim($m[1], '.');
+        }
+
+        $paidAt = null;
+        if (preg_match('/\bon\s+(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2})(?:\s+at\s+(\d{1,2}:\d{2}(?::\d{2})?)(?:\s*([AP]M)\b)?)?/i', $text, $m) === 1) {
+            $paidAt = $m[1];
+            if (($m[2] ?? '') !== '') {
+                $paidAt .= ' ' . $m[2] . (($m[3] ?? '') !== '' ? ' ' . strtoupper($m[3]) : '');
+            }
+        }
+
+        return [
+            'code' => $code,
+            'kind' => 'bank',
+            'amountCents' => $amount,
+            'payerName' => $payerName,
+            'payerPhone' => $payerPhone,
+            'accountRef' => $account,
+            'paidAtText' => $paidAt,
+            'message' => mb_substr(self::withoutBalances($text), 0, 500),
+        ];
     }
 
     /** Whether the message is about money the phone's owner paid or sent. */

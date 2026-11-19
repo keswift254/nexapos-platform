@@ -194,7 +194,7 @@ $elsewhereKey = $elsewhere['body']['key'];
 check($pass($elsewhereKey, str_replace('Ksh500.00', 'Ksh123.00', $tillSms))['body']['recorded'] === true, 'Another shop could not record a code this shop also has.');
 check((int) $pdo->query("SELECT amount_cents FROM payment_inbox WHERE mpesa_code = 'SJK2TILL9X' AND shop_id = $otherShopId")->fetchColumn() === 12300, "The other shop's payment is not its own.");
 
-// ---- M-PESA Jumbe: the till's alert to a nominated phone is a payment received; money this phone paid never is ---------
+// ---- M-PESA Jumbe: the till's alert to a nominated phone is a payment received; the payer's own receipt never is ------
 $jumbeAlert = static fn (string $code, string $amount = '60.00') => "$code Confirmed.\nAmount: Ksh$amount.\nPaid to: MAMA MBOGA KUNDI\nTILL: 5678900\nFrom: NK_74\nDate: 2026-11-19 at 18:27:37.\n\nMPESA Jumbe! A public-friendly SMS you can display without exposing personal MPESA information.";
 $paidTill = static fn (string $code) => "$code Confirmed. Ksh60.00 paid to MAMA MBOGA KUNDI. on 19/11/26 at 6:27 PM.New M-PESA balance is Ksh940.00. Transaction cost, Ksh0.00.";
 $inboxRow = static function (string $code) use ($pdo, $inboxShopId) {
@@ -202,7 +202,6 @@ $inboxRow = static function (string $code) use ($pdo, $inboxShopId) {
     $stmt->execute([$inboxShopId, $code]);
     return $stmt->fetch(PDO::FETCH_ASSOC);
 };
-$spentCount = static fn () => (int) $pdo->query('SELECT COUNT(*) FROM payment_inbox_spent')->fetchColumn();
 
 $jumbeTaken = $pass($phoneKey, $jumbeAlert('UKJB430TS5'));
 check(($jumbeTaken['body']['recorded'] ?? false) === true, 'A Jumbe payment alert was not recorded: ' . $jumbeTaken['raw']);
@@ -210,39 +209,32 @@ $jumbeRow = $inboxRow('UKJB430TS5');
 check($jumbeRow && (int) $jumbeRow['amount_cents'] === 6000 && $jumbeRow['payer_name'] === 'NK_74' && $jumbeRow['paid_at_text'] === '2026-11-19 18:27:37' && $jumbeRow['received_at'] !== null,
     'The Jumbe payment was not stored as the alert says: ' . json_encode($jumbeRow));
 
-// the customer's own Jumbe receipt (money this phone paid) is dropped, and only its code is remembered
+// the customer's own Jumbe receipt (money this phone paid) is dropped
 $receipt = $pass($phoneKey, 'UFAL477KQJ Confirmed. You sent: Ksh2,000.00. Received by: Petrol Station Till. TILL: 5678900. Your JumbeID: NK_74. Date: 2026-06-10 at 14:56:38.');
 check(($receipt['body']['recorded'] ?? true) === false && ($receipt['body']['reason'] ?? '') === 'not_a_payment', "The customer's Jumbe receipt was taken as a payment: " . $receipt['raw']);
 check(!$inboxRow('UFAL477KQJ'), "The customer's Jumbe receipt was stored as a payment.");
-$spentRow = $pdo->query("SELECT * FROM payment_inbox_spent WHERE mpesa_code = 'UFAL477KQJ'")->fetch(PDO::FETCH_ASSOC);
-check($spentRow && (int) $spentRow['shop_id'] === $inboxShopId && count($spentRow) === 3, 'A code this phone paid out was not remembered (or more than the code was kept): ' . json_encode($spentRow));
 
-// this phone paid a till, and the till's Jumbe alert for the same code reached it too: in either order, no payment
-check(($pass($phoneKey, $paidTill('UKJB440PO1'))['body']['reason'] ?? '') === 'not_a_payment', 'A payment this phone made was not dropped.');
-$after = $pass($phoneKey, $jumbeAlert('UKJB440PO1'));
-check(($after['body']['recorded'] ?? true) === false && !$inboxRow('UKJB440PO1'), 'A Jumbe alert for a code this phone paid out was taken as a payment: ' . $after['raw']);
-check(($pass($phoneKey, $jumbeAlert('UKJB440PO2'))['body']['recorded'] ?? false) === true && $inboxRow('UKJB440PO2'), 'The Jumbe alert (arriving first) was not recorded.');
-$pass($phoneKey, $paidTill('UKJB440PO2'));
-check(!$inboxRow('UKJB440PO2'), 'A Jumbe "payment" was kept after this phone\'s own payment message for the same code arrived.');
-check(($pass($phoneKey, $jumbeAlert('UKJB440PO2'))['body']['recorded'] ?? true) === false && !$inboxRow('UKJB440PO2'), 'The same Jumbe alert sent again brought the paid-out code back.');
+// 2026-11-19 23:07: the owner paid their own till from the shop phone. That phone got the till's Jumbe alert AND its own
+// payment message for the same code, within seconds. The money went into the shop's till: in either order it is a payment.
+check(($pass($phoneKey, $jumbeAlert('UKJB440PO1'))['body']['recorded'] ?? false) === true, 'Jumbe alert PO1 was not recorded.');
+$own = $pass($phoneKey, $paidTill('UKJB440PO1'));
+check(($own['body']['reason'] ?? '') === 'not_a_payment', "This phone's own payment message was taken as a payment: " . $own['raw']);
+check((int) ($inboxRow('UKJB440PO1')['amount_cents'] ?? 0) === 6000, 'A Jumbe payment was taken back because this phone also paid it (an owner testing their own till).');
+check(($pass($phoneKey, $paidTill('UKJB440PO2'))['body']['reason'] ?? '') === 'not_a_payment', 'A payment this phone made was not dropped.');
+check(!$inboxRow('UKJB440PO2'), 'A payment this phone made was stored.');
+$after = $pass($phoneKey, $jumbeAlert('UKJB440PO2'));
+check(($after['body']['recorded'] ?? false) === true && (int) ($inboxRow('UKJB440PO2')['amount_cents'] ?? 0) === 6000, "A Jumbe alert arriving after this phone's own payment message was not recorded: " . $after['raw']);
+check(($pass($phoneKey, $jumbeAlert('UKJB440PO2'))['body']['reason'] ?? '') === 'already_have_it', 'The same Jumbe alert sent again was not seen as already here.');
+check((int) $pdo->query("SELECT COUNT(*) FROM payment_inbox WHERE mpesa_code = 'UKJB440PO2'")->fetchColumn() === 1, 'The same Jumbe alert sent twice made two payments.');
 
-// ...but a sale that already used the code is never undone, and a till's own "received" message is never taken back
-check(($pass($phoneKey, $jumbeAlert('UKJB440PO3'))['body']['recorded'] ?? false) === true, 'Jumbe alert PO3 was not recorded.');
-$pdo->prepare("UPDATE payment_inbox SET claimed_sale_id = 'sale-po3', claimed_sale_number = 'S-PO3', claimed_amount_cents = 6000, claimed_at = UTC_TIMESTAMP() WHERE shop_id = ? AND mpesa_code = 'UKJB440PO3'")->execute([$inboxShopId]);
-$pass($phoneKey, $paidTill('UKJB440PO3'));
-check(($inboxRow('UKJB440PO3')['claimed_sale_id'] ?? null) === 'sale-po3', 'A payment a sale had already used was removed.');
+// a till's own "received" message is never taken back either
 check(($pass($phoneKey, 'UKJB440PO4 Confirmed. on 19/11/26 at 6:30 PM Ksh5.00 received from 254712345678 OWNER TEST. New Account balance is Ksh5.00.')['body']['recorded'] ?? false) === true, 'A till received message was not recorded.');
 $pass($phoneKey, $paidTill('UKJB440PO4'));
 check($inboxRow('UKJB440PO4') !== false, "A till's own received message was taken back because this phone also paid it (an owner testing their own till).");
 
-// remembered for 7 days only; and one shop's paid-out codes are nothing to another shop
-$pdo->exec("UPDATE payment_inbox_spent SET seen_at = UTC_TIMESTAMP() - INTERVAL 8 DAY WHERE mpesa_code = 'UFAL477KQJ'");
-check(($pass($phoneKey, $jumbeAlert('UFAL477KQJ'))['body']['recorded'] ?? false) === true, 'A paid-out code older than 7 days still blocked a payment.');
-$pass($phoneKey, $paidTill('UKJB440PO5'));
-check((int) $pdo->query("SELECT COUNT(*) FROM payment_inbox_spent WHERE mpesa_code = 'UFAL477KQJ'")->fetchColumn() === 0, 'Paid-out codes older than 7 days are not cleared away.');
-check(($pass($elsewhereKey, $jumbeAlert('UKJB440PO1'))['body']['recorded'] ?? false) === true, "Another shop's Jumbe alert was blocked by this shop's paid-out code.");
-check($spentCount() >= 3, 'Paid-out codes went missing.');
-$pdo->exec("DELETE FROM payment_inbox WHERE mpesa_code IN ('UKJB430TS5', 'UKJB440PO3', 'UKJB440PO4', 'UFAL477KQJ', 'UKJB440PO1')");
+// nothing is kept about money this phone paid: the table that kept those codes is gone
+check((int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'payment_inbox_spent'")->fetchColumn() === 0, 'payment_inbox_spent still exists.');
+$pdo->exec("DELETE FROM payment_inbox WHERE mpesa_code IN ('UKJB430TS5', 'UKJB440PO1', 'UKJB440PO2', 'UKJB440PO4')");
 
 // every message counts toward the phone's hour; 600 is the most
 check($pdo->query('SELECT last_used_at FROM payment_inbox_sources WHERE id = ' . (int) $phoneId)->fetchColumn() !== null, 'The phone was not marked as heard from.');

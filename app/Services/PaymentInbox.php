@@ -192,16 +192,11 @@ final class PaymentInbox
         }
 
         $shopId = (int) $source['shop_id'];
+        // A Jumbe alert stays even when this same phone paid the code: only a phone the till nominated gets the alert, so
+        // the money went into the shop's till (2026-11-19: the owner paid their own till from the shop phone, and a rule
+        // that took such alerts back threw that payment away).
         $payment = MpesaSms::parse($text);
         if ($payment === null) {
-            $spent = MpesaSms::spentCode($text);
-            if ($spent !== null) {
-                self::rememberPaidOut($pdo, $shopId, $spent);
-            }
-            return ['recorded' => false, 'reason' => 'not_a_payment'];
-        }
-        if ($payment['kind'] === 'jumbe' && self::paidOut($pdo, $shopId, $payment['code'])) {
-            // This phone paid this code itself: the alert is about money going out, not a customer's payment.
             return ['recorded' => false, 'reason' => 'not_a_payment'];
         }
 
@@ -229,37 +224,6 @@ final class PaymentInbox
         return $write->rowCount() > 0
             ? ['recorded' => true, 'reason' => 'recorded']
             : ['recorded' => false, 'reason' => 'already_have_it'];
-    }
-
-    /** How long a code the shop phone paid out is remembered. */
-    public const PAID_OUT_DAYS = 7;
-
-    /**
-     * Remembers that the shop phone itself paid [$code], and takes back a payment that was read from a Jumbe alert for it
-     * (that alert arrived first) - unless a sale already used it, which is left for people to sort out, never undone here.
-     * A payment read from the till's own "received" message stays: that is a real payment in, even when the phone paid it
-     * (an owner testing their own till).
-     */
-    private static function rememberPaidOut(PDO $pdo, int $shopId, string $code): void
-    {
-        $pdo->prepare('INSERT IGNORE INTO payment_inbox_spent (shop_id, mpesa_code, seen_at) VALUES (?, ?, UTC_TIMESTAMP())')
-            ->execute([$shopId, $code]);
-        $pdo->prepare('DELETE FROM payment_inbox_spent WHERE seen_at < UTC_TIMESTAMP() - INTERVAL ' . self::PAID_OUT_DAYS . ' DAY')->execute();
-
-        $found = $pdo->prepare('SELECT id, message FROM payment_inbox WHERE shop_id = ? AND mpesa_code = ? AND received_at IS NOT NULL AND claimed_sale_id IS NULL');
-        $found->execute([$shopId, $code]);
-        $row = $found->fetch(PDO::FETCH_ASSOC);
-        if ($row && (MpesaSms::parse((string) $row['message'])['kind'] ?? null) === 'jumbe') {
-            $pdo->prepare('DELETE FROM payment_inbox WHERE id = ? AND claimed_sale_id IS NULL')->execute([(int) $row['id']]);
-        }
-    }
-
-    /** Whether the shop phone paid [$code] itself (within the last PAID_OUT_DAYS days). */
-    private static function paidOut(PDO $pdo, int $shopId, string $code): bool
-    {
-        $stmt = $pdo->prepare('SELECT 1 FROM payment_inbox_spent WHERE shop_id = ? AND mpesa_code = ? AND seen_at >= UTC_TIMESTAMP() - INTERVAL ' . self::PAID_OUT_DAYS . ' DAY');
-        $stmt->execute([$shopId, $code]);
-        return $stmt->fetchColumn() !== false;
     }
 
     // ------------------------------------------------------------------------------------------------------------

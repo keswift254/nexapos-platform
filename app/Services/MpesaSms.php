@@ -19,9 +19,10 @@ namespace Platform\Services;
  * M-PESA Jumbe ("split notifications", 2026): a till or paybill that has it switched on also sends a short payment alert,
  * without balances, to the phones its owner nominated - "<CODE> Confirmed. Amount: Ksh60.00. Paid to: <SHOP> TILL: <no>
  * From: <payer> Date: <date> at <time>. MPESA Jumbe! ..." - with no word "received" in it. That is a payment received
- * too (kind 'jumbe'). The CUSTOMER gets a Jumbe receipt of their own ("You sent: ... Received by: ... Your JumbeID: ...");
- * that one, like every other message about money the phone's owner paid or sent, is never a payment received: see
- * spentCode(), which the inbox uses so a code this phone paid out can never pass as a customer's payment.
+ * too (kind 'jumbe'): only a phone the till nominated gets it, so the money went into that till - even when the same phone
+ * paid it (an owner testing their own till). The CUSTOMER gets a Jumbe receipt of their own ("You sent: ... Received by:
+ * ... Your JumbeID: ..."); that one, like every other message about money the phone's owner paid or sent, is never a
+ * payment received.
  */
 final class MpesaSms
 {
@@ -60,19 +61,6 @@ final class MpesaSms
             return self::received($code, $text);
         }
         return null;
-    }
-
-    /**
-     * The code of a payment the phone's owner MADE (paid to a till or a paybill, or sent to someone - including the
-     * customer's Jumbe receipt), or null for anything else. Nothing else of the message is read.
-     */
-    public static function spentCode(string $raw): ?string
-    {
-        $head = self::head($raw);
-        if ($head === null) {
-            return null;
-        }
-        return self::isPaidOut($head[1]) ? $head[0] : null;
     }
 
     /**
@@ -128,7 +116,8 @@ final class MpesaSms
         }
 
         [$payerName, $payerPhone] = [null, null];
-        if (preg_match('/\b(?:From|Customer|Payer|JumbeID)\s*:\s*(.+?)(?=\s+' . self::JUMBE_LABEL . '|\.\s|\.$|$)/i', $text, $m) === 1) {
+        // (.*?) may be empty: "From:" with nothing after it is no payer, not the next part ("Date: ...").
+        if (preg_match('/\b(?:From|Customer|Payer|JumbeID)\s*:(.*?)(?=\s+' . self::JUMBE_LABEL . '|\.\s|\.$|$)/i', $text, $m) === 1) {
             [$payerName, $payerPhone] = self::who($m[1]);
         }
 

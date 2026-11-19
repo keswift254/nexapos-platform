@@ -78,6 +78,14 @@ same($pochi['amountCents'] ?? null, 10000, 'pochi: the amount');
 same($pochi['payerName'] ?? null, 'JOHN DOE', 'pochi: who paid');
 check($pochi !== null && $pochi['payerPhone'] === null, 'pochi: no number given');
 check(strpos($pochi['message'], 'balance is Ksh ***') !== false, 'pochi: the business balance is blanked');
+// the real Pochi wording (the owner's screenshot, 2026-11-20; the code and payer are made up here)
+$pochiReal = MpesaSms::parse("SJK4POCH1B Confirmed.You have\nreceived Ksh100.00 from JANE\nAKINYI on 2/11/26 at 6:38 PM New\nPochi balance is Ksh100.00. To access\nyour funds, Dial *334#,select Pochi la\nBiashara & Withdraw funds.");
+same($pochiReal['kind'] ?? null, 'received', 'pochi (real wording): a payment received');
+same($pochiReal['code'] ?? null, 'SJK4POCH1B', 'pochi (real wording): the code');
+same($pochiReal['amountCents'] ?? null, 10000, 'pochi (real wording): the amount');
+same($pochiReal['payerName'] ?? null, 'JANE AKINYI', 'pochi (real wording): who paid, across a line break');
+same($pochiReal['paidAtText'] ?? null, '2/11/26 6:38 PM', 'pochi (real wording): when');
+check($pochiReal !== null && strpos($pochiReal['message'], 'Pochi balance is Ksh ***. To access your funds') !== false && strpos($pochiReal['message'], 'Ksh100.00. To') === false, 'pochi (real wording): the Pochi balance is blanked, the rest kept');
 
 // --- the same things written a little differently ------------------------------------------------------------------
 $masked = MpesaSms::parse('SJK5MASK2B Confirmed.You have received Ksh70.00 from MARY A 0712***678 on 1/2/27 at 7:00 AM New M-PESA balance is Ksh70.00.');

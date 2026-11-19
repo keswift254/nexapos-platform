@@ -132,7 +132,7 @@ final class PaymentInbox
     public static function sources(PDO $pdo, int $shopId): array
     {
         $stmt = $pdo->prepare(
-            'SELECT id, label, created_by_user, created_at, last_used_at FROM payment_inbox_sources
+            'SELECT id, label, created_by_user, created_at, last_used_at, sender_seen_at FROM payment_inbox_sources
              WHERE shop_id = ? AND revoked_at IS NULL ORDER BY id'
         );
         $stmt->execute([$shopId]);
@@ -144,6 +144,8 @@ final class PaymentInbox
                 'added_by' => (string) ($row['created_by_user'] ?? ''),
                 'added_at' => self::iso($row['created_at']),
                 'last_message_at' => self::iso($row['last_used_at']),
+                // true once the phone's Shortcut sends who each SMS came from: messages typed by a person are refused
+                'sender_check' => $row['sender_seen_at'] !== null,
             ];
         }
         return $out;
@@ -161,14 +163,19 @@ final class PaymentInbox
     // A phone passing a message on
 
     /**
-     * @return array{recorded:bool,reason:string}  reason: recorded | already_have_it | not_a_payment
+     * [$sender]: who the SMS came from, as the phone saw it (the iPhone Shortcut's "Sender"). A message from a person's
+     * number or email is never a payment (MpesaSms::fromPerson). The first message that comes with a sender switches the
+     * check on for that phone for good: from then on a message without one is refused too, so a sender can never be left
+     * out to slip past it. A phone whose Shortcut does not send one yet works as before.
+     *
+     * @return array{recorded:bool,reason:string}  reason: recorded | already_have_it | not_a_payment | from_a_person | no_sender
      */
-    public static function ingest(PDO $pdo, string $key, string $text): array
+    public static function ingest(PDO $pdo, string $key, string $text, ?string $sender = null): array
     {
         if (preg_match('/^npk_[a-f0-9]{48}$/', $key) !== 1) {
             throw new PaymentInboxRefusal(401, 'bad_key', 'This phone is not set up for a shop (the key is not right).');
         }
-        $found = $pdo->prepare('SELECT id, shop_id FROM payment_inbox_sources WHERE token_hash = ? AND revoked_at IS NULL');
+        $found = $pdo->prepare('SELECT id, shop_id, sender_seen_at FROM payment_inbox_sources WHERE token_hash = ? AND revoked_at IS NULL');
         $found->execute([hash('sha256', $key)]);
         $source = $found->fetch(PDO::FETCH_ASSOC);
         if (!$source) {
@@ -192,6 +199,19 @@ final class PaymentInbox
         }
 
         $shopId = (int) $source['shop_id'];
+        $sender = trim((string) $sender);
+        if ($sender !== '') {
+            if ($source['sender_seen_at'] === null) {
+                $pdo->prepare('UPDATE payment_inbox_sources SET sender_seen_at = UTC_TIMESTAMP() WHERE id = ? AND sender_seen_at IS NULL')
+                    ->execute([$sourceId]);
+            }
+            if (MpesaSms::fromPerson($sender)) {
+                return ['recorded' => false, 'reason' => 'from_a_person'];
+            }
+        } elseif ($source['sender_seen_at'] !== null) {
+            return ['recorded' => false, 'reason' => 'no_sender'];
+        }
+
         // A Jumbe alert stays even when this same phone paid the code: only a phone the till nominated gets the alert, so
         // the money went into the shop's till (2026-11-19: the owner paid their own till from the shop phone, and a rule
         // that took such alerts back threw that payment away).

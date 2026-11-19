@@ -64,6 +64,22 @@ final class MpesaSms
     }
 
     /**
+     * Whether an SMS came from a PERSON - a phone number ("+254 712 345 678", "0712345678") or, for an iMessage, an email
+     * address - rather than from M-Pesa or a bank, which send under a name ("MPESA", "Equity Bank") or a short code.
+     * Anyone can type an M-Pesa message and send it to the shop phone from their own line, so such a message is never a
+     * payment, however real it looks.
+     */
+    public static function fromPerson(string $sender): bool
+    {
+        $sender = trim($sender);
+        if (strpos($sender, '@') !== false) {
+            return true;
+        }
+        $plain = (string) preg_replace('/[\s\x{00A0}\-().\/]+/u', '', $sender);
+        return preg_match('/^\+?\d{7,15}$/', $plain) === 1;
+    }
+
+    /**
      * The message as one line, and its code when it opens with "<CODE> Confirmed"; null when it is not such a message.
      *
      * @return array{0:string,1:string}|null

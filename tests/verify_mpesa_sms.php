@@ -166,6 +166,14 @@ same(MpesaSms::parse('SJK1ABC2DF Confirmed. Ksh500.00 sent to JANE DOE 071234567
 same(MpesaSms::parse('SJK1ABC2DG Confirmed. Ksh500.00 sent to KPLC PREPAID for account 123 on 17/11/26 at 12:47 PM.'), null, 'a paybill payment the owner made is not money received');
 same($personal['kind'] ?? null, 'received', 'a message with "received" is marked as one');
 
+// --- who the SMS came from: a person's number or email, or M-Pesa / a bank -------------------------------------------
+foreach (['+254 712 345 678', '+254712345678', '0712345678', '254712345678', '0712 345 678', '(0712) 345-678', '712345678', ' 0712.345.678 ', 'someone@icloud.com'] as $person) {
+    check(MpesaSms::fromPerson($person), "a person's sender: '$person'");
+}
+foreach (['MPESA', 'M-PESA', 'Equity Bank', 'Co-opBank', 'ABSA', 'KCB', 'Safaricom', '40404', '123456', 'MPESA 0712345678', ''] as $name) {
+    check(!MpesaSms::fromPerson($name), "not a person's sender: '$name'");
+}
+
 // --- codes as a cashier types them ----------------------------------------------------------------------------------
 same(MpesaSms::normalizeCode(' ukh3r3nltu '), 'UKH3R3NLTU', 'a typed code: capitals, spaces off');
 same(MpesaSms::normalizeCode('UKH3 R3NL-TU'), 'UKH3R3NLTU', 'a typed code: spaces and dashes inside are dropped');

@@ -236,6 +236,54 @@ check($inboxRow('UKJB440PO4') !== false, "A till's own received message was take
 check((int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'payment_inbox_spent'")->fetchColumn() === 0, 'payment_inbox_spent still exists.');
 $pdo->exec("DELETE FROM payment_inbox WHERE mpesa_code IN ('UKJB430TS5', 'UKJB440PO1', 'UKJB440PO2', 'UKJB440PO4')");
 
+// ---- who the SMS came from: a message a person typed and sent from their own line is never a payment ----------------
+$senderKey = $long['body']['key'];
+$senderPhoneId = $long['body']['phone']['id'];
+$fromSender = static fn (string $key, string $text, $sender) => $inbox('payment_inbox_ingest', 'POST', ['key' => $key, 'text' => $text, 'sender' => $sender], []);
+$senderCheck = static function (int $id) use ($inbox, $tillAuth): ?bool {
+    foreach ($inbox('payment_inbox_sources', 'GET', null, $tillAuth)['body']['phones'] ?? [] as $phone) {
+        if ($phone['id'] === $id) {
+            return $phone['sender_check'];
+        }
+    }
+    return null;
+};
+$sms = static fn (string $code) => "$code Confirmed. on 20/11/26 at 9:05 AM Ksh250.00 received from 254712345678 JOHN DOE. New Account balance is Ksh10,500.00.";
+check($senderCheck($senderPhoneId) === false, 'A new phone should not have the sender check on.');
+// a Shortcut that sends no sender yet works as before
+check(($pass($senderKey, $sms('SND1OLD01A'))['body']['recorded'] ?? false) === true, 'A phone without a sender in its Shortcut stopped working.');
+check($senderCheck($senderPhoneId) === false, 'The sender check came on without a sender.');
+// a sender that is not text counts as none
+check(($fromSender($senderKey, $sms('SND1ARR01B'), ['MPESA'])['body']['recorded'] ?? false) === true && $senderCheck($senderPhoneId) === false, 'A sender that is not text switched the check on (or the message was lost).');
+// M-Pesa's own name: recorded, and the check is on for good
+$mpesa = $fromSender($senderKey, $sms('SND1MPE01C'), 'MPESA');
+check(($mpesa['body']['recorded'] ?? false) === true, 'A message from MPESA was not recorded: ' . $mpesa['raw']);
+check($senderCheck($senderPhoneId) === true, 'The sender check did not come on.');
+// from a person's number or email: never a payment, and nothing of it kept
+foreach (['+254 712 345 678', '0712345678', '254712345678', '(071) 234-5678', 'someone@icloud.com'] as $i => $person) {
+    $code = 'SND2PER0' . $i . 'D';
+    $no = $fromSender($senderKey, $sms($code), $person);
+    check($no['status'] === 200 && ($no['body']['recorded'] ?? true) === false && ($no['body']['reason'] ?? '') === 'from_a_person', "A message from $person was taken: " . $no['raw']);
+    check((int) $pdo->query("SELECT COUNT(*) FROM payment_inbox WHERE mpesa_code = '$code'")->fetchColumn() === 0, "A message from $person was stored.");
+}
+// once the check is on, a message without a sender is refused too: leaving the sender out must not get past it
+foreach ([null, '', '   '] as $none) {
+    $body = ['key' => $senderKey, 'text' => $sms('SND3NONE1E')];
+    if ($none !== null) {
+        $body['sender'] = $none;
+    }
+    $no = $inbox('payment_inbox_ingest', 'POST', $body, []);
+    check(($no['body']['reason'] ?? '') === 'no_sender' && ($no['body']['recorded'] ?? true) === false, 'A message without a sender got past the check: ' . $no['raw']);
+}
+check((int) $pdo->query("SELECT COUNT(*) FROM payment_inbox WHERE mpesa_code = 'SND3NONE1E'")->fetchColumn() === 0, 'A message without a sender was stored.');
+// banks and short codes send under a name or a short number: read as usual
+check(($fromSender($senderKey, $sms('SND4BANK1F'), 'Equity Bank')['body']['recorded'] ?? false) === true, 'A message from a bank name was refused.');
+check(($fromSender($senderKey, $sms('SND4SHRT1G'), '40404')['body']['recorded'] ?? false) === true, 'A message from a short code was refused.');
+check(($fromSender($senderKey, $sms('SND4MPE2H'), 'M-PESA')['body']['recorded'] ?? false) === true, 'A message from M-PESA was refused.');
+// the check is per phone: the main phone still sends no sender, and still works
+check(($pass($phoneKey, $sms('SND5MAIN1J'))['body']['recorded'] ?? false) === true, "One phone's sender check stopped another phone.");
+$pdo->exec("DELETE FROM payment_inbox WHERE mpesa_code LIKE 'SND%'");
+
 // every message counts toward the phone's hour; 600 is the most
 check($pdo->query('SELECT last_used_at FROM payment_inbox_sources WHERE id = ' . (int) $phoneId)->fetchColumn() !== null, 'The phone was not marked as heard from.');
 $pdo->exec('UPDATE payment_inbox_sources SET window_count = 600 WHERE id = ' . (int) $phoneId);

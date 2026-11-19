@@ -552,6 +552,9 @@ if ($action === 'payment_inbox_ingest' && $method === 'POST') {
     }
     $key = $named['key'] ?? '';
     $text = $named['text'] ?? '';
+    // Who the SMS came from. Anything but text counts as not given (the message is still read, as before the check).
+    $sender = $named['sender'] ?? null;
+    $sender = is_string($sender) ? mb_substr($sender, 0, 200) : null;
     if (!is_string($key) || !is_string($text) || trim($text) === '') {
         jsonResponse(['success' => false, 'reason' => 'bad_request', 'message' => 'Send "key" (this phone\'s key) and "text" (the SMS).'], 422);
     }
@@ -559,7 +562,7 @@ if ($action === 'payment_inbox_ingest' && $method === 'POST') {
         jsonResponse(['success' => false, 'reason' => 'too_long', 'message' => 'That is too long to be an SMS.'], 422);
     }
     try {
-        $result = PaymentInbox::ingest($pdo, trim($key), $text);
+        $result = PaymentInbox::ingest($pdo, trim($key), $text, $sender);
     } catch (PaymentInboxRefusal $refusal) {
         paymentInboxRefused($refusal);
     }

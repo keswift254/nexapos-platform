@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS payment_inbox_sources (
     revoked_at DATETIME NULL,
     window_started_at DATETIME NULL,
     window_count INT NOT NULL DEFAULT 0,
+    sender_seen_at DATETIME NULL,
     UNIQUE INDEX uq_payment_inbox_source_token (token_hash),
     INDEX idx_payment_inbox_sources_shop (shop_id),
     FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE,

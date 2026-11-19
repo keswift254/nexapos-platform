@@ -255,6 +255,9 @@ check(($pass($senderKey, $sms('SND1OLD01A'))['body']['recorded'] ?? false) === t
 check($senderCheck($senderPhoneId) === false, 'The sender check came on without a sender.');
 // a sender that is not text counts as none
 check(($fromSender($senderKey, $sms('SND1ARR01B'), ['MPESA'])['body']['recorded'] ?? false) === true && $senderCheck($senderPhoneId) === false, 'A sender that is not text switched the check on (or the message was lost).');
+// the message itself (Message instead of Sender in the Shortcut's sender row), or anything too long for a name: none
+check(($fromSender($senderKey, $sms('SND1SELF1K'), $sms('SND1SELF1K'))['body']['recorded'] ?? false) === true && $senderCheck($senderPhoneId) === false, 'The message itself passed as a sender (or the message was lost).');
+check(($fromSender($senderKey, $sms('SND1LONG1L'), str_repeat('A', 61))['body']['recorded'] ?? false) === true && $senderCheck($senderPhoneId) === false, 'A 61-character sender switched the check on.');
 // M-Pesa's own name: recorded, and the check is on for good
 $mpesa = $fromSender($senderKey, $sms('SND1MPE01C'), 'MPESA');
 check(($mpesa['body']['recorded'] ?? false) === true, 'A message from MPESA was not recorded: ' . $mpesa['raw']);
@@ -276,6 +279,10 @@ foreach ([null, '', '   '] as $none) {
     check(($no['body']['reason'] ?? '') === 'no_sender' && ($no['body']['recorded'] ?? true) === false, 'A message without a sender got past the check: ' . $no['raw']);
 }
 check((int) $pdo->query("SELECT COUNT(*) FROM payment_inbox WHERE mpesa_code = 'SND3NONE1E'")->fetchColumn() === 0, 'A message without a sender was stored.');
+// once on, the message itself or a too-long sender is refused like no sender; 60 characters is still a name
+check(($fromSender($senderKey, $sms('SND3SELF2M'), $sms('SND3SELF2M'))['body']['reason'] ?? '') === 'no_sender', 'The message itself got past the check as its own sender.');
+check(($fromSender($senderKey, $sms('SND3LONG2N'), str_repeat('A', 61))['body']['reason'] ?? '') === 'no_sender', 'A 61-character sender got past the check.');
+check(($fromSender($senderKey, $sms('SND3NAME6P'), str_repeat('B', 60))['body']['recorded'] ?? false) === true, 'A 60-character sender name was refused.');
 // banks and short codes send under a name or a short number: read as usual
 check(($fromSender($senderKey, $sms('SND4BANK1F'), 'Equity Bank')['body']['recorded'] ?? false) === true, 'A message from a bank name was refused.');
 check(($fromSender($senderKey, $sms('SND4SHRT1G'), '40404')['body']['recorded'] ?? false) === true, 'A message from a short code was refused.');

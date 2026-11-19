@@ -29,6 +29,8 @@ final class PaymentInbox
     public const MAX_SOURCES = 5;
     /** Messages one phone may pass on in an hour (every message counts, payment or not). */
     public const HOURLY_LIMIT = 600;
+    /** The longest sender name taken as one; anything longer (the message itself, say) is no sender. */
+    public const SENDER_MAX = 60;
     private const LOCK_AFTER_FAILURES = 5;
     private const LOCK_MINUTES = 10;
 
@@ -200,6 +202,11 @@ final class PaymentInbox
 
         $shopId = (int) $source['shop_id'];
         $sender = trim((string) $sender);
+        // A Shortcut that puts the message itself in "sender" (Message instead of Sender in that row) has not given who
+        // sent it: counted as no sender, so the check does not show as on while it checks nothing.
+        if (mb_strlen($sender) > self::SENDER_MAX || $sender === trim($text)) {
+            $sender = '';
+        }
         if ($sender !== '') {
             if ($source['sender_seen_at'] === null) {
                 $pdo->prepare('UPDATE payment_inbox_sources SET sender_seen_at = UTC_TIMESTAMP() WHERE id = ? AND sender_seen_at IS NULL')

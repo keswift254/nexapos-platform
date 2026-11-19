@@ -203,6 +203,28 @@ same(MpesaSms::parse('Dear MAMA MBOGA, you have sent Ksh. 200.00 to JOHN on 11/1
 same(MpesaSms::parse('Dear MAMA MBOGA, you have received Ksh. 200.00 from JOHN. MPESA Ref. RECEIVEDOK'), null, 'co-op: a "reference" with no digits is not a code');
 same(MpesaSms::parse('Dear MAMA MBOGA, you have received a new statement. MPESA Ref. UKFQV1WVG8'), null, 'co-op: no amount received, no payment');
 
+// --- Equity Bank (the owner's screenshot, 2026-11-20; the payer and code are made up here) -------------------------------
+$equity = MpesaSms::parse('Confirmed. KES. 1.00 from Jane Wanjiku received Ref. UKK3R41OJA on 20-11-2026 at 00:49. Thank you');
+check($equity !== null, 'equity: money received through M-Pesa is a payment received');
+same($equity['kind'] ?? null, 'bank', 'equity: marked as a bank message');
+same($equity['code'] ?? null, 'UKK3R41OJA', 'equity: the code after "Ref."');
+same($equity['amountCents'] ?? null, 100, 'equity: "KES. 1.00" is 100 cents');
+same($equity['payerName'] ?? null, 'Jane Wanjiku', 'equity: who paid, up to "received"');
+check($equity !== null && $equity['payerPhone'] === null && $equity['accountRef'] === null, 'equity: no number, no account');
+same($equity['paidAtText'] ?? null, '20-11-2026 00:49', 'equity: when, as the message says it (day-month-year)');
+$equityLines = MpesaSms::parse("Confirmed. KES. 1,500.50 from JOHN\nKAMAU 2547***45678 received Ref.\nUKK3R41OJB on 20-11-2026 at 13:05. Thank you");
+same($equityLines['amountCents'] ?? null, 150050, 'equity: line breaks and a thousands comma');
+same($equityLines['payerName'] ?? null, 'JOHN KAMAU', 'equity: the name, with a hidden number split off');
+same($equityLines['payerPhone'] ?? null, '2547***45678', 'equity: and the number');
+same($equityLines['code'] ?? null, 'UKK3R41OJB', 'equity: the code across a line break');
+$equityDot = MpesaSms::parse('Confirmed. KES. 250.00 from JOHN K. KAMAU received Ref. UKK3R41OJE on 20-11-2026 at 13:05. Thank you');
+same($equityDot['amountCents'] ?? null, 25000, 'equity: a payer name with a full stop still gives the amount');
+same($equityDot['payerName'] ?? null, 'JOHN K. KAMAU', 'equity: and the whole name');
+same(MpesaSms::parse('Confirmed. KES. 500.00 sent to JOHN KAMAU Ref. UKK3R41OJC on 20-11-2026 at 13:05. Thank you'), null, 'equity: money sent out is never a payment');
+same(MpesaSms::parse('Confirmed. KES. 500.00 from JOHN KAMAU received on 20-11-2026 at 13:05. Thank you'), null, 'equity: no reference, no payment');
+same(MpesaSms::parse('Confirmed. KES. 500.00 from JOHN KAMAU received Ref. PAYMENTREF on 20-11-2026.'), null, 'equity: a reference with no digits is not a code');
+same(MpesaSms::parse('Confirmed. Your KES. 500.00 refund Ref. UKK3R41OJD is on its way.'), null, 'equity: no amount received, no payment');
+
 // --- who the SMS came from: a person's number or email, or M-Pesa / a bank -------------------------------------------
 foreach (['+254 712 345 678', '+254712345678', '0712345678', '254712345678', '0712 345 678', '(0712) 345-678', '712345678', ' 0712.345.678 ', 'someone@icloud.com'] as $person) {
     check(MpesaSms::fromPerson($person), "a person's sender: '$person'");

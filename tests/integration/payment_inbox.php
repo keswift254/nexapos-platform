@@ -291,6 +291,11 @@ check(($fromSender($senderKey, $sms('SND4MPE2H'), 'M-PESA')['body']['recorded'] 
 $coop = $fromSender($senderKey, 'Dear RIG SHOP T/A NEXAPOS, you have received Ksh. 250.00 from JOHN KAMAU for 01192000000049 on 11/20/2026 at 09:05:00. MPESA Ref. SND6COOP1Q..', 'Co-opBank');
 check(($coop['body']['recorded'] ?? false) === true, 'A Co-op Bank message was not recorded: ' . $coop['raw']);
 $coopRow = $pdo->query("SELECT amount_cents, payer_name, account_ref, paid_at_text FROM payment_inbox WHERE mpesa_code = 'SND6COOP1Q'")->fetch(PDO::FETCH_ASSOC);
+$equity = $fromSender($senderKey, 'Confirmed. KES. 120.00 from JANE WANJIKU received Ref. SND7EQTY1R on 20-11-2026 at 09:10. Thank you', 'Equity Bank');
+check(($equity['body']['recorded'] ?? false) === true, 'An Equity Bank message was not recorded: ' . $equity['raw']);
+$equityRow = $pdo->query("SELECT amount_cents, payer_name, paid_at_text FROM payment_inbox WHERE mpesa_code = 'SND7EQTY1R'")->fetch(PDO::FETCH_ASSOC);
+check($equityRow && (int) $equityRow['amount_cents'] === 12000 && $equityRow['payer_name'] === 'JANE WANJIKU' && $equityRow['paid_at_text'] === '20-11-2026 09:10',
+    'The Equity Bank payment was not stored as the message says: ' . json_encode($equityRow));
 check($coopRow && (int) $coopRow['amount_cents'] === 25000 && $coopRow['payer_name'] === 'JOHN KAMAU' && $coopRow['account_ref'] === '01192000000049' && $coopRow['paid_at_text'] === '11/20/2026 09:05:00',
     'The Co-op Bank payment was not stored as the message says: ' . json_encode($coopRow));
 // the check is per phone: the main phone still sends no sender, and still works

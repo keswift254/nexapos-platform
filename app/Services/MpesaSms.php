@@ -24,8 +24,8 @@ namespace Platform\Services;
  * ... Your JumbeID: ..."); that one, like every other message about money the phone's owner paid or sent, is never a
  * payment received.
  *
- * A BANK's message about money paid into the shop's bank account through M-Pesa (kind 'bank'; Co-op Bank so far) does not
- * open with "<CODE> Confirmed": the M-Pesa code comes last, after "MPESA Ref." (see viaBank()).
+ * A BANK's message about money paid into the shop's bank account through M-Pesa (kind 'bank'; Co-op Bank and Equity Bank
+ * so far) does not open with "<CODE> Confirmed": the M-Pesa code comes after "Ref." (see viaBank()).
  */
 final class MpesaSms
 {
@@ -125,27 +125,35 @@ final class MpesaSms
     }
 
     /**
-     * A bank's message about money paid into the shop's bank account through M-Pesa. Co-op Bank (the owner's screenshot,
-     * 2026-11-20): "Dear <ACCOUNT NAME>, you have received Ksh. 20.00 from <payer> for <account> on 11/15/2026 at 17:32:35.
-     * MPESA Ref. UKFQV1WVG3.." Read only when it has BOTH "received <amount>" and the M-Pesa reference: the payment is
-     * kept under that M-Pesa code - the one the customer's own M-Pesa message shows. The date (month/day/year here) is
-     * kept as written.
+     * A bank's message about money paid into the shop's bank account through M-Pesa (the owner's screenshots, 2026-11-20):
+     *   Co-op Bank:  "Dear <ACCOUNT NAME>, you have received Ksh. 20.00 from <payer> for <account> on 11/15/2026 at
+     *                17:32:35. MPESA Ref. UKFQV1WVG3.."
+     *   Equity Bank: "Confirmed. KES. 1.00 from <payer> received Ref. UKK3R41OJX on 20-11-2026 at 00:49. Thank you"
+     * Read only when it has BOTH an amount received ("received <amount>", or "<amount> from <payer> received") and a
+     * reference that can be an M-Pesa code (letters and digits): the payment is kept under that code - the one the
+     * customer's own M-Pesa message shows. The date is kept as written (month/day/year at Co-op, day-month-year at Equity).
      *
      * @return array<string,mixed>|null
      */
     private static function viaBank(string $text): ?array
     {
-        if (preg_match('/\bM-?PESA\s+Ref(?:erence)?\b\.?\s*(?:No\.?\s*)?:?\s*([A-Za-z0-9]{8,12})\b/i', $text, $ref) !== 1) {
+        if (preg_match('/\b(?:M-?PESA\s+)?Ref(?:erence)?\b\.?\s*(?:No\.?\s*)?:?\s*([A-Za-z0-9]{8,12})\b/i', $text, $ref) !== 1) {
             return null;
         }
         $code = self::realCode($ref[1]);
-        if ($code === null || preg_match('/\breceived\s+' . self::MONEY . '/i', $text, $m) !== 1) {
+        if ($code === null) {
+            return null;
+        }
+        if (preg_match('/\breceived\s+' . self::MONEY . '/i', $text, $m) !== 1
+            && preg_match('/' . self::MONEY . '\s+from\s+.{1,120}?\s+received\b/i', $text, $m) !== 1) {
             return null;
         }
         $amount = self::cents($m[1]);
 
         [$payerName, $payerPhone] = [null, null];
-        if (preg_match('/\breceived\s+' . self::MONEY . '\s+from\s+(.+?)(?=\s+for\s|\s+on\s+\d|\.\s|\.$|$)/i', $text, $m) === 1) {
+        // "<amount> from <payer> received" (Equity) first, so a name with a full stop ("JOHN K. KAMAU") is read whole
+        if (preg_match('/' . self::MONEY . '\s+from\s+(.{1,120}?)\s+received\b/i', $text, $m) === 1
+            || preg_match('/' . self::MONEY . '\s+from\s+(.+?)(?=\s+for\s|\s+on\s+\d|\.\s|\.$|$)/i', $text, $m) === 1) {
             [$payerName, $payerPhone] = self::who($m[2]);
         }
 

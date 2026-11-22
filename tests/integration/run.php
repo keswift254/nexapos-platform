@@ -277,9 +277,23 @@ check((int) $pdo->query("SELECT COUNT(*) FROM sync_changes WHERE device_id = 'ow
     'The stock-only resend created a second copy of the revision.');
 check(json_decode((string) $pdo->query("SELECT payload FROM sync_changes WHERE device_id = 'owner-device' AND local_rev = 91")->fetchColumn(), true)['stockQty'] === 10,
     'The stock-only resend overwrote the stored revision.');
+// a sale moved the product's updatedAt too (the app's stock update, or the database trigger behind its stock recount):
+// still the same revision
+$later = gmdate('Y-m-d\TH:i:s', time() + 60) . '.222222Z';
+$drifted = $productChange(['stockQty' => 6, 'updatedAt' => $later]);
+$drifted['updated_at'] = $later;
+$driftedResend = request($baseUrl, 'push_changes', 'POST', ['changes' => [$drifted]], $ownerAuth);
+check($driftedResend['status'] === 200, 'A re-sent product revision whose updatedAt moved with its stock was refused: ' . $driftedResend['raw']);
+check((string) $pdo->query("SELECT updated_at FROM sync_changes WHERE device_id = 'owner-device' AND local_rev = 91")->fetchColumn() === $productStamp,
+    'The drifted resend overwrote the stored revision time.');
 $priceChange = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['priceMinor' => 99999])]], $ownerAuth);
-check($priceChange['status'] === 422 && str_contains((string) ($priceChange['body']['message'] ?? ''), 'different content'),
+check($priceChange['status'] === 422 && str_contains((string) ($priceChange['body']['message'] ?? ''), 'already recorded with different content'),
     'A re-sent product revision with a different price was accepted: ' . $priceChange['raw']);
+// a clash says what the device needs to number its unsent changes past it
+$ownerMax = (int) $pdo->query("SELECT MAX(local_rev) FROM sync_changes WHERE device_id = 'owner-device'")->fetchColumn();
+check(($priceChange['body']['reason'] ?? null) === 'revision_clash' && ($priceChange['body']['source_device_id'] ?? null) === 'owner-device'
+    && ($priceChange['body']['local_rev'] ?? null) === 91 && ($priceChange['body']['max_local_rev'] ?? null) === $ownerMax && $ownerMax >= 91,
+    'A revision clash did not report the highest revision held for the device: ' . $priceChange['raw']);
 $extraField = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['barcode' => 'X1'])]], $ownerAuth);
 check($extraField['status'] === 422, 'A re-sent product revision with an extra field was accepted.');
 $otherTableStock = $productChange(['stockQty' => 3], 92);
@@ -289,6 +303,17 @@ check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableStock]
 $otherTableStock['payload']['stockQty'] = 4;
 check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableStock]], $ownerAuth)['status'] === 422,
     'The device-local allowance leaked to a table other than products.');
+$otherTableTime = $otherTableStock;
+$otherTableTime['payload']['stockQty'] = 3;
+$otherTableTime['updated_at'] = $otherTableTime['payload']['updatedAt'] = $later;
+$otherTime = request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableTime]], $ownerAuth);
+check($otherTime['status'] === 422 && ($otherTime['body']['reason'] ?? null) === 'revision_clash',
+    'A category resend with another updatedAt was accepted (only products may move it): ' . $otherTime['raw']);
+// a clash on an OLDER revision reports the highest the device has (here 92, the category), not the clashing one
+$olderClash = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['priceMinor' => 88888])]], $ownerAuth);
+$ownerMaxNow = (int) $pdo->query("SELECT MAX(local_rev) FROM sync_changes WHERE device_id = 'owner-device'")->fetchColumn();
+check($ownerMaxNow > 91 && ($olderClash['body']['local_rev'] ?? null) === 91 && ($olderClash['body']['max_local_rev'] ?? null) === $ownerMaxNow,
+    'A clash on an older revision did not report the highest revision of the device: ' . $olderClash['raw']);
 
 $inactiveRelay = $relayChange;
 $inactiveRelay['local_rev'] = 78;

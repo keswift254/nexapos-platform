@@ -56,8 +56,31 @@ const SYNCED_TABLE_NAMES = [
  * different content", which stalls the device's entire upload queue.
  */
 const DEVICE_LOCAL_PAYLOAD_FIELDS = [
-    'products' => ['stockQty', 'imagePath'],
+    // A device recounts a product's stock after every sale and every sync without a new revision, and until app 1.0.90
+    // that also moved the product's updatedAt (a database trigger stamps any update that leaves it alone). None of the
+    // three is content another device takes from the revision.
+    'products' => ['stockQty', 'imagePath', 'updatedAt'],
 ];
+
+/**
+ * A device sent a revision number the shop already holds for it with other content: its revision counter went back (its
+ * data was restored from an older copy) or a row changed under an old number. [maxLocalRev] is the highest revision
+ * recorded for that device, so the device can number its unsent changes above it and send them again.
+ */
+final class RevisionClash extends \RuntimeException
+{
+    public $sourceDeviceId;
+    public $localRev;
+    public $maxLocalRev;
+
+    public function __construct(string $sourceDeviceId, int $localRev, int $maxLocalRev)
+    {
+        parent::__construct('A source revision was already recorded with different content.');
+        $this->sourceDeviceId = $sourceDeviceId;
+        $this->localRev = $localRev;
+        $this->maxLocalRev = $maxLocalRev;
+    }
+}
 
 /** True when a re-sent revision matches the stored one, ignoring device-local fields. */
 function revisionPayloadsMatch(string $tableName, $stored, array $incoming): bool
@@ -1855,11 +1878,16 @@ if ($action === 'push_changes' && $method === 'POST') {
             $existingRevision->execute([$client['shop_id'], $sourceDeviceId, $localRev]);
             $existing = $existingRevision->fetch(PDO::FETCH_ASSOC);
             if ($existing) {
+                // updated_at is part of what must match, except for a table whose updatedAt a device moves on its own
+                // (products: see DEVICE_LOCAL_PAYLOAD_FIELDS), where the payload comparison below leaves it out too.
+                $timeCounts = !in_array('updatedAt', DEVICE_LOCAL_PAYLOAD_FIELDS[$tableName] ?? [], true);
                 if ($existing['table_name'] !== $tableName
                     || $existing['row_id'] !== $rowId
-                    || $existing['updated_at'] !== $updatedAt
+                    || ($timeCounts && $existing['updated_at'] !== $updatedAt)
                     || !revisionPayloadsMatch($tableName, json_decode((string) $existing['payload'], true), $payload)) {
-                    throw new \RuntimeException('A source revision was already recorded with different content.');
+                    $highest = $pdo->prepare('SELECT MAX(local_rev) FROM sync_changes WHERE shop_id = ? AND device_id = ?');
+                    $highest->execute([$client['shop_id'], $sourceDeviceId]);
+                    throw new RevisionClash($sourceDeviceId, $localRev, (int) $highest->fetchColumn());
                 }
                 continue;
             }
@@ -1869,6 +1897,17 @@ if ($action === 'push_changes' && $method === 'POST') {
             ]);
         }
         $pdo->commit();
+    } catch (RevisionClash $e) {
+        // The same words as ever (apps up to 1.0.89 look for them), plus what a device needs to renumber past the clash.
+        $pdo->rollBack();
+        jsonResponse([
+            'success' => false,
+            'message' => 'Could not record changes: ' . $e->getMessage(),
+            'reason' => 'revision_clash',
+            'source_device_id' => $e->sourceDeviceId,
+            'local_rev' => $e->localRev,
+            'max_local_rev' => $e->maxLocalRev,
+        ], 422);
     } catch (\RuntimeException $e) {
         // Our own validation message (thrown just above, in this same
         // function) - safe to show verbatim, unlike a raw DB exception.

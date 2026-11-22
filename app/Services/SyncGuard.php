@@ -251,10 +251,11 @@ final class SyncGuard
         }
         $method = $s['paymentMethod'];
         $cash = $s['cashReceivedCents'];
-        if (in_array($method, ['mpesa', 'mpesa_manual', 'intasend'], true) && $cash !== null) {
-            self::fail("$label: cash received only belongs to cash and split online sales.");
+        if (in_array($method, ['mpesa', 'intasend'], true) && $cash !== null) {
+            self::fail("$label: cash received only belongs to cash and split sales.");
         }
-        if ($method === 'paystack' && $cash !== null && ($cash < 1 || $cash >= $s['totalCents'])) {
+        // a split sale: part in cash, the rest by M-Pesa prompt ('paystack') or to the shop's own till ('mpesa_manual')
+        if (in_array($method, ['paystack', 'mpesa_manual'], true) && $cash !== null && ($cash < 1 || $cash >= $s['totalCents'])) {
             self::fail("$label: the cash part of a split sale must be less than the total.");
         }
     }
@@ -451,7 +452,8 @@ final class SyncGuard
             if ($payment['status'] !== 'initiated' || $payment['amountCents'] !== $expectedAmount || (string) $payment['referenceNote'] === '') {
                 self::fail("Sale {$sale['saleNumber']}: the online payment record does not match the sale.");
             }
-        } elseif ($payment['status'] !== 'paid' || $payment['amountCents'] !== $sale['totalCents']) {
+        } elseif ($payment['status'] !== 'paid' || $payment['amountCents'] !== $sale['totalCents'] - ($sale['cashReceivedCents'] ?? 0)) {
+            // a split till sale's payment covers only what the cash did not
             self::fail("Sale {$sale['saleNumber']}: the payment record does not match the sale.");
         }
     }
@@ -648,7 +650,8 @@ final class SyncGuard
             self::fail("Refund $number: the total is not what the goods come to after the discount.");
         }
         $expectedCash = null;
-        if ($original['paymentMethod'] === 'paystack' && ($original['cashReceivedCents'] ?? null) !== null) {
+        // a split sale (part cash, the rest by M-Pesa prompt or to the shop's own till): the app's Sale.isSplitPayment
+        if (in_array($original['paymentMethod'], ['paystack', 'mpesa_manual'], true) && ($original['cashReceivedCents'] ?? null) !== null) {
             $cashTarget = self::roundedShare((int) $original['cashReceivedCents'], $priorTotal + $total, (int) $original['totalCents']);
             $expectedCash = -max(0, min($total, $cashTarget - $priorCash));
         }

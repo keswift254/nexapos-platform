@@ -22,7 +22,12 @@ use PDO;
  *    never a flat per-item margin, which would count a discount twice (ReportsDao.grossProfitCentsForRange);
  *  - expenses are by their plain calendar date in [fromDate, toDate);
  *  - cash and M-Pesa received: a cash sale is all cash; a Paystack/M-Pesa sale is M-Pesa, except for a split sale whose
- *    cash part was taken first (ReportSaleRow.cashPortionCents / mpesaPortionCents).
+ *    cash part was taken first (ReportSaleRow.cashPortionCents / mpesaPortionCents);
+ *  - REFUNDS: the apps record a refund as its own sale (saleType 'refund') with negative amounts, so it counts on the day
+ *    the money went back. It is not a transaction and not among the sales: Paid Sales is what customers paid, Refunds
+ *    what went back, Grand Total = paid - refunds - expenses. Gross profit adds up EVERY paid sale including the refunds
+ *    (their negative lines take the margin back), exactly as the apps' own SQL does. The dashboard's Sales Today is net
+ *    of refunds, as in the apps.
  *
  * The range is chosen by the till in the iPad's own local time (so "today" means the shopkeeper's today); this class
  * only compares. Read-only.
@@ -37,9 +42,9 @@ final class LiteReport
     /** @return array<string,mixed> */
     public static function build(PDO $pdo, int $shopId, string $fromUtc, string $toUtc, string $fromDate, string $toDate, bool $withRecords = false): array
     {
-        [$paid, $itemsBySale, $expenses, $names] = self::load($pdo, $shopId, $fromUtc, $toUtc, $fromDate, $toDate);
+        [$paid, $itemsBySale, $expenses, $names, $originals, $refunded] = self::load($pdo, $shopId, $fromUtc, $toUtc, $fromDate, $toDate, true);
 
-        return self::aggregate($paid, $itemsBySale, $expenses, $names, $fromUtc, $toUtc, $fromDate, $toDate, $withRecords);
+        return self::aggregate($paid, $itemsBySale, $expenses, $names, $fromUtc, $toUtc, $fromDate, $toDate, $withRecords, $refunded, $originals);
     }
 
     /**
@@ -54,7 +59,7 @@ final class LiteReport
     public static function days(PDO $pdo, int $shopId, array $bounds, array $dates): array
     {
         $last = count($bounds) - 1;
-        [$paid, $itemsBySale, $expenses, $names] = self::load($pdo, $shopId, $bounds[0], $bounds[$last], $dates[0], $dates[$last]);
+        [$paid, $itemsBySale, $expenses, $names] = self::load($pdo, $shopId, $bounds[0], $bounds[$last], $dates[0], $dates[$last], false);
 
         return self::buckets($paid, $itemsBySale, $expenses, $names, $bounds, $dates);
     }
@@ -80,7 +85,9 @@ final class LiteReport
                 'toUtc' => $bounds[$i + 1],
                 'fromDate' => $dates[$i],
                 'toDate' => $dates[$i + 1],
-                'salesTotalCents' => $part['salesTotalCents'],
+                // The dashboard's Sales Today is net of refunds (the apps' ReportsDao.salesStatsForRange adds the negative sales in).
+                'salesTotalCents' => $part['salesTotalCents'] - $part['refundsTotalCents'],
+                'refundsCents' => $part['refundsTotalCents'],
                 'transactionCount' => $part['transactionCount'],
                 'grossProfitCents' => $part['grossProfitCents'],
                 'expensesTotalCents' => $part['expensesTotalCents'],
@@ -93,9 +100,12 @@ final class LiteReport
     /**
      * The newest versions of what a period needs: its paid sales, their items, its expenses and the names of the users.
      *
-     * @return array{0:array<string,array<string,mixed>>,1:array<string,list<array<string,mixed>>>,2:array<string,array<string,mixed>>,3:array<string,string>}
+     * With [$details] also: the numbers of the sales the period's refunds give back, and how much of each listed sale has
+     * been refunded so far (by refunds of ANY date).
+     *
+     * @return array{0:array<string,array<string,mixed>>,1:array<string,list<array<string,mixed>>>,2:array<string,array<string,mixed>>,3:array<string,string>,4:array<string,string>,5:array<string,int>}
      */
-    private static function load(PDO $pdo, int $shopId, string $fromUtc, string $toUtc, string $fromDate, string $toDate): array
+    private static function load(PDO $pdo, int $shopId, string $fromUtc, string $toUtc, string $fromDate, string $toDate, bool $details = false): array
     {
         $cursorStmt = $pdo->prepare('SELECT COALESCE(MAX(id), 0) FROM sync_changes WHERE shop_id = ?');
         $cursorStmt->execute([$shopId]);
@@ -133,7 +143,41 @@ final class LiteReport
             $names[(string) $id] = (string) ($user['name'] ?? '');
         }
 
-        return [$paid, $itemsBySale, $expenses, $names];
+        $originals = [];
+        $refundedBySale = [];
+        if ($details) {
+            // The sales this period's refunds give back (they can be from an earlier day), for "Refund of SALE-1".
+            $wanted = [];
+            foreach ($paid as $sale) {
+                if (($sale['saleType'] ?? '') === 'refund' && ($sale['refundOfSaleId'] ?? '') !== '') {
+                    $wanted[(string) $sale['refundOfSaleId']] = true;
+                }
+            }
+            foreach (array_chunk(array_keys($wanted), 400) as $batch) {
+                $marks = implode(',', array_fill(0, count($batch), '?'));
+                foreach (self::newest($pdo, $shopId, $cursor, 'sales', "AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.id')) IN ($marks)", $batch) as $id => $original) {
+                    $originals[(string) $id] = (string) ($original['saleNumber'] ?? '');
+                }
+            }
+            // How much of each sale in the list has been refunded so far, by refunds of any date.
+            $listed = [];
+            foreach ($paid as $id => $sale) {
+                if (($sale['saleType'] ?? '') !== 'refund') {
+                    $listed[] = (string) $id;
+                }
+            }
+            foreach (array_chunk($listed, 400) as $batch) {
+                $marks = implode(',', array_fill(0, count($batch), '?'));
+                foreach (self::newest($pdo, $shopId, $cursor, 'sales', "AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.refundOfSaleId')) IN ($marks)", $batch) as $refund) {
+                    if (($refund['saleType'] ?? '') === 'refund' && ($refund['status'] ?? '') === 'paid') {
+                        $of = (string) ($refund['refundOfSaleId'] ?? '');
+                        $refundedBySale[$of] = ($refundedBySale[$of] ?? 0) - (int) ($refund['totalCents'] ?? 0);
+                    }
+                }
+            }
+        }
+
+        return [$paid, $itemsBySale, $expenses, $names, $originals, $refundedBySale];
     }
 
     /**
@@ -145,12 +189,17 @@ final class LiteReport
      * @param array<string,array<string,mixed>> $expenses    expense id => expense, in range
      * @param array<string,string> $userNames                user id => name
      * @param bool $withRecords                              also give each expense's whole stored record
+     * @param array<string,int> $refundedBySale              sale id => cents refunded so far (positive), by refunds of any date
+     * @param array<string,string> $originalNumbers          sale id => sale number, for the sales the refunds give back
      * @return array<string,mixed>
      */
     public static function aggregate(array $paidSales, array $itemsBySale, array $expenses, array $userNames,
-        string $fromUtc, string $toUtc, string $fromDate, string $toDate, bool $withRecords = false): array
+        string $fromUtc, string $toUtc, string $fromDate, string $toDate, bool $withRecords = false,
+        array $refundedBySale = [], array $originalNumbers = []): array
     {
         $salesTotal = 0;
+        $refundsTotal = 0;
+        $refundRows = [];
         $grossProfit = 0;
         $cash = 0;
         $mpesa = 0;
@@ -176,11 +225,29 @@ final class LiteReport
             foreach ($items as $item) {
                 $quantity = (int) ($item['quantity'] ?? 0);
                 $cost += $quantity * (int) ($item['costPriceCents'] ?? 0);
-                $names[] = (string) ($item['itemName'] ?? '') . ' x' . $quantity;
+                // A refund's lines are negative; they are listed as what went back ("Soda x2").
+                $names[] = (string) ($item['itemName'] ?? '') . ' x' . (($sale['saleType'] ?? '') === 'refund' ? -$quantity : $quantity);
+            }
+
+            // Every paid sale, refunds included (their negative lines and total take the margin back).
+            $grossProfit += $total - $cost;
+            if (($sale['saleType'] ?? '') === 'refund') {
+                $refundsTotal -= $total;
+                $refundRows[] = [
+                    'id' => (string) $id,
+                    'saleNumber' => (string) ($sale['saleNumber'] ?? ''),
+                    'originalSaleNumber' => ($originalNumbers[(string) ($sale['refundOfSaleId'] ?? '')] ?? '') !== '' ? $originalNumbers[(string) $sale['refundOfSaleId']] : null,
+                    'processedByName' => $userNames[(string) ($sale['userId'] ?? '')] ?? 'Unknown',
+                    'paymentMethod' => $method,
+                    'reason' => ($sale['refundReason'] ?? '') !== '' ? (string) $sale['refundReason'] : null,
+                    'totalCents' => -$total,
+                    'createdAt' => $createdAt,
+                    'itemNames' => $names === [] ? null : implode(', ', $names),
+                ];
+                continue;
             }
 
             $salesTotal += $total;
-            $grossProfit += $total - $cost;
             if ($method === 'cash') {
                 $cash += $total;
             } elseif (in_array($method, self::MPESA_FAMILY, true)) {
@@ -198,9 +265,13 @@ final class LiteReport
                 'totalCents' => $total,
                 'createdAt' => $createdAt,
                 'itemNames' => $names === [] ? null : implode(', ', $names),
+                'refundedCents' => $refundedBySale[(string) $id] ?? 0,
             ];
         }
         $transactions = count($rows);
+        // Refunds too, newest first.
+        usort($refundRows, static fn (array $a, array $b): int => [$b['createdAt'], $b['saleNumber']] <=> [$a['createdAt'], $a['saleNumber']]);
+        $refundCount = count($refundRows);
         // Newest first, as in the apps; a tie is broken by the sale number so the order is always the same.
         usort($rows, static fn (array $a, array $b): int => [$b['createdAt'], $b['saleNumber']] <=> [$a['createdAt'], $a['saleNumber']]);
 
@@ -242,9 +313,13 @@ final class LiteReport
             'expenseCount' => $expenseCount,
             'grossProfitCents' => $grossProfit,
             'netProfitCents' => $grossProfit - $expensesTotal,
-            'grandTotalCents' => $salesTotal - $expensesTotal,
+            'refundsTotalCents' => $refundsTotal,
+            'refundCount' => $refundCount,
+            'grandTotalCents' => $salesTotal - $refundsTotal - $expensesTotal,
             'sales' => array_slice($rows, 0, self::MAX_LISTED),
             'salesTruncated' => $transactions > self::MAX_LISTED,
+            'refunds' => array_slice($refundRows, 0, self::MAX_LISTED),
+            'refundsTruncated' => $refundCount > self::MAX_LISTED,
             'expenses' => array_slice($expenseRows, 0, self::MAX_LISTED),
             'expensesTruncated' => $expenseCount > self::MAX_LISTED,
         ];
@@ -257,7 +332,7 @@ final class LiteReport
      * @param list<string> $params
      * @return array<string,array<string,mixed>> row id => payload
      */
-    private static function newest(PDO $pdo, int $shopId, int $cursor, string $table, string $where, array $params): array
+    public static function newest(PDO $pdo, int $shopId, int $cursor, string $table, string $where, array $params): array
     {
         $stmt = $pdo->prepare(
             "SELECT row_id, device_id, updated_at, payload FROM sync_changes

@@ -61,8 +61,14 @@ jobs:
         run: php tests/verify_lite_report.php
       - name: Verify the Lite till's expenses (the app's own records accepted, bad ones refused)
         run: php tests/verify_expense_guard.php
+      - name: Verify refunds in the lite till's reports (the app's own refund records, numbers worked out by hand)
+        run: php tests/verify_lite_refunds.php
+      - name: Verify refunds made by the Lite till (the app's own refund records accepted, bad ones refused)
+        run: php tests/verify_refund_guard.php
       - name: Verify the support email sender (SMTP)
         run: php tests/verify_smtp_client.php
+      - name: Verify the M-Pesa SMS reader (payments received are read, everything else is dropped)
+        run: php tests/verify_mpesa_sms.php
       - name: Verify initial sync snapshots
         run: php tests/integration/sync_snapshot.php
       - name: Support chat and ticket emails

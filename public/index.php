@@ -19,6 +19,7 @@ use Platform\Core\InviteCode;
 use Platform\Services\PaystackClient;
 use Platform\Services\LiteCatalog;
 use Platform\Services\LiteReport;
+use Platform\Services\LiteSale;
 use Platform\Services\SyncGuard;
 use Platform\Services\SyncGuardViolation;
 use Platform\Services\PaymentReconciler;
@@ -29,6 +30,9 @@ use Platform\Services\SyncSnapshot;
 use Platform\Services\SupportMailer;
 use Platform\Services\SupportNotifier;
 use Platform\Services\SupportAttachments;
+use Platform\Services\MpesaSms;
+use Platform\Services\PaymentInbox;
+use Platform\Services\PaymentInboxRefusal;
 
 /**
  * The 10 SyncedColumns tables on the phone (see _syncedTableNames in
@@ -52,8 +56,31 @@ const SYNCED_TABLE_NAMES = [
  * different content", which stalls the device's entire upload queue.
  */
 const DEVICE_LOCAL_PAYLOAD_FIELDS = [
-    'products' => ['stockQty', 'imagePath'],
+    // A device recounts a product's stock after every sale and every sync without a new revision, and until app 1.0.90
+    // that also moved the product's updatedAt (a database trigger stamps any update that leaves it alone). None of the
+    // three is content another device takes from the revision.
+    'products' => ['stockQty', 'imagePath', 'updatedAt'],
 ];
+
+/**
+ * A device sent a revision number the shop already holds for it with other content: its revision counter went back (its
+ * data was restored from an older copy) or a row changed under an old number. [maxLocalRev] is the highest revision
+ * recorded for that device, so the device can number its unsent changes above it and send them again.
+ */
+final class RevisionClash extends \RuntimeException
+{
+    public $sourceDeviceId;
+    public $localRev;
+    public $maxLocalRev;
+
+    public function __construct(string $sourceDeviceId, int $localRev, int $maxLocalRev)
+    {
+        parent::__construct('A source revision was already recorded with different content.');
+        $this->sourceDeviceId = $sourceDeviceId;
+        $this->localRev = $localRev;
+        $this->maxLocalRev = $maxLocalRev;
+    }
+}
 
 /** True when a re-sent revision matches the stored one, ignoring device-local fields. */
 function revisionPayloadsMatch(string $tableName, $stored, array $incoming): bool
@@ -506,6 +533,162 @@ if ($action === 'intasend_webhook' && $method === 'POST') {
     }
 
     jsonResponse(['success' => true, 'outcome' => $result['outcome']]);
+}
+
+// "Manual Till/Paybill": the shop's payment inbox (see PaymentInbox). The customer pays the shop's own M-Pesa till or
+// paybill; the phone that gets Safaricom's "payment received" SMS passes it on here, and any till of the shop can check a
+// code against what arrived. A code can be used on one sale only.
+
+/** Answers with what the payment inbox refused, in the shape every client of this API expects. */
+function paymentInboxRefused(PaymentInboxRefusal $refusal): void
+{
+    jsonResponse(array_merge(['success' => false, 'reason' => $refusal->reason, 'message' => $refusal->getMessage()], $refusal->details), $refusal->status);
+}
+
+/** The M-Pesa code in a request, in its stored form; 422 when it cannot be one. */
+function paymentInboxCode($raw): string
+{
+    $code = MpesaSms::normalizeCode((string) $raw);
+    if ($code === null) {
+        jsonResponse(['success' => false, 'reason' => 'bad_code', 'message' => 'That does not look like an M-Pesa code. It is the 10 letters and numbers at the start of the message.'], 422);
+    }
+    return $code;
+}
+
+// A phone passing an SMS on. NOT a device of the shop: it proves itself with the key it was given when it was set up,
+// sent in the body (never in the address, where it would end up in server logs). Only payments RECEIVED are kept.
+if ($action === 'payment_inbox_ingest' && $method === 'POST') {
+    $raw = (string) file_get_contents('php://input');
+    if (strlen($raw) > 16384) {
+        jsonResponse(['success' => false, 'reason' => 'too_long', 'message' => 'That is too long to be an SMS.'], 422);
+    }
+    $body = json_decode($raw, true);
+    if (!is_array($body)) {
+        // An iPhone Shortcut may send a form instead of JSON.
+        $body = $_POST;
+    }
+    // The field names are typed by hand on the phone, and an iPhone writes the first letter as a capital by itself: "Key",
+    // "TEXT " and "key" all mean the same field.
+    $named = [];
+    foreach ($body as $name => $value) {
+        $named[strtolower(trim((string) $name))] ??= $value;
+    }
+    $key = $named['key'] ?? '';
+    $text = $named['text'] ?? '';
+    // Who the SMS came from. Anything but text counts as not given (the message is still read, as before the check).
+    $sender = $named['sender'] ?? null;
+    $sender = is_string($sender) ? mb_substr($sender, 0, 200) : null;
+    if (!is_string($key) || !is_string($text) || trim($text) === '') {
+        jsonResponse(['success' => false, 'reason' => 'bad_request', 'message' => 'Send "key" (this phone\'s key) and "text" (the SMS).'], 422);
+    }
+    if (mb_strlen($text) > MpesaSms::MAX_LENGTH) {
+        jsonResponse(['success' => false, 'reason' => 'too_long', 'message' => 'That is too long to be an SMS.'], 422);
+    }
+    try {
+        $result = PaymentInbox::ingest($pdo, trim($key), $text, $sender);
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    jsonResponse(['success' => true, 'recorded' => $result['recorded'], 'reason' => $result['reason']]);
+}
+
+// The shop's phones that pass messages on (never their keys).
+if ($action === 'payment_inbox_sources' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    jsonResponse(['success' => true, 'phones' => PaymentInbox::sources($pdo, (int) $client['shop_id']), 'max_phones' => PaymentInbox::MAX_SOURCES]);
+}
+
+// Sets a phone up: answers with its key, once. Whoever holds a key can pass on a made-up message, so this needs the
+// password of an administrator of the shop, checked here against the shop's own users - not just a device of the shop.
+if ($action === 'payment_inbox_add_source' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    try {
+        $admin = PaymentInbox::requireAdmin($pdo, (int) $client['shop_id'], (string) ($body['user_id'] ?? ''), (string) ($body['password'] ?? ''));
+        $added = PaymentInbox::addSource($pdo, (int) $client['shop_id'], (int) $client['id'], (string) ($body['label'] ?? ''), $admin['username']);
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    jsonResponse(['success' => true, 'key' => $added['key'], 'phone' => $added['source']], 201);
+}
+
+if ($action === 'payment_inbox_remove_source' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    try {
+        PaymentInbox::requireAdmin($pdo, (int) $client['shop_id'], (string) ($body['user_id'] ?? ''), (string) ($body['password'] ?? ''));
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    if (!PaymentInbox::removeSource($pdo, (int) $client['shop_id'], (int) ($body['phone_id'] ?? 0))) {
+        jsonResponse(['success' => false, 'reason' => 'not_found', 'message' => 'The shop has no such phone.'], 404);
+    }
+    jsonResponse(['success' => true, 'phones' => PaymentInbox::sources($pdo, (int) $client['shop_id'])]);
+}
+
+// What arrived and what was used lately, newest first.
+if ($action === 'payment_inbox_list' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    $hours = (int) ($_GET['hours'] ?? 24);
+    jsonResponse([
+        'success' => true,
+        'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
+        'phones' => count(PaymentInbox::sources($pdo, (int) $client['shop_id'])),
+        'payments' => PaymentInbox::recent($pdo, (int) $client['shop_id'], $hours < 1 ? 24 : $hours),
+    ]);
+}
+
+// One code: has its message arrived, for how much, and is it used?
+if ($action === 'payment_inbox_check' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    $code = paymentInboxCode($_GET['code'] ?? '');
+    $payment = PaymentInbox::find($pdo, (int) $client['shop_id'], $code);
+    jsonResponse(['success' => true, 'code' => $code, 'found' => $payment !== null, 'payment' => $payment]);
+}
+
+// Uses a code on one sale (see PaymentInbox::claim).
+if ($action === 'payment_inbox_claim' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $code = paymentInboxCode($body['code'] ?? '');
+    $saleId = (string) ($body['sale_id'] ?? '');
+    $saleNumber = trim((string) ($body['sale_number'] ?? ''));
+    $amount = $body['amount_cents'] ?? null;
+    if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $saleId) !== 1
+        || $saleNumber === '' || mb_strlen($saleNumber) > 60 || !is_int($amount) || $amount <= 0) {
+        jsonResponse(['success' => false, 'reason' => 'bad_request', 'message' => 'sale_id, sale_number and amount_cents (a whole number above 0) are required.'], 422);
+    }
+    try {
+        $claimed = PaymentInbox::claim(
+            $pdo, (int) $client['shop_id'], (int) $client['id'], $code, $saleId, $saleNumber, $amount,
+            ($body['require_message'] ?? false) === true, ($body['accept_amount'] ?? false) === true
+        );
+    } catch (PaymentInboxRefusal $refusal) {
+        paymentInboxRefused($refusal);
+    }
+    jsonResponse(['success' => true, 'confirmed' => $claimed['confirmed'], 'payment' => $claimed['payment']]);
+}
+
+// Archives a payment that arrived - it is no longer suggested at checkout on any till - or, with "archived": false, suggests
+// it again. It stays in the list of payments received, and its code can still be typed. Any device of the shop may do it.
+if ($action === 'payment_inbox_archive' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $code = paymentInboxCode($body['code'] ?? '');
+    $archived = ($body['archived'] ?? true) !== false;
+    $payment = PaymentInbox::archive($pdo, (int) $client['shop_id'], (int) $client['id'], $code, $archived);
+    if ($payment === null) {
+        jsonResponse(['success' => false, 'reason' => 'not_found', 'message' => 'The shop has no M-Pesa payment with this code.'], 404);
+    }
+    jsonResponse(['success' => true, 'payment' => $payment]);
+}
+
+// Frees a code a sale had used (the sale was cancelled before it was finished).
+if ($action === 'payment_inbox_release' && $method === 'POST') {
+    $client = Auth::requireClient($pdo);
+    $body = requestBody();
+    $code = paymentInboxCode($body['code'] ?? '');
+    jsonResponse(['success' => true, 'released' => PaymentInbox::release($pdo, (int) $client['shop_id'], $code, (string) ($body['sale_id'] ?? ''))]);
 }
 
 // Customer support tickets. Every action is authenticated and shop-scoped:
@@ -1610,6 +1793,7 @@ if ($action === 'push_changes' && $method === 'POST') {
                     $itemsOfSale->fetchAll(PDO::FETCH_COLUMN)
                 ), 'is_array'));
             };
+            $refundsOf = static fn (string $saleId): array => LiteSale::refundsOf($pdo, (int) $client['shop_id'], $saleId);
             $newChanges = [];
             foreach ($changes as $candidate) {
                 $alreadyRecorded = false;
@@ -1622,7 +1806,7 @@ if ($action === 'push_changes' && $method === 'POST') {
                 }
             }
             try {
-                SyncGuard::check($newChanges, (string) $client['device_id'], $storedRow, $storedItems);
+                SyncGuard::check($newChanges, (string) $client['device_id'], $storedRow, $storedItems, $refundsOf);
             } catch (SyncGuardViolation $violation) {
                 throw new \RuntimeException($violation->getMessage());
             }
@@ -1694,11 +1878,16 @@ if ($action === 'push_changes' && $method === 'POST') {
             $existingRevision->execute([$client['shop_id'], $sourceDeviceId, $localRev]);
             $existing = $existingRevision->fetch(PDO::FETCH_ASSOC);
             if ($existing) {
+                // updated_at is part of what must match, except for a table whose updatedAt a device moves on its own
+                // (products: see DEVICE_LOCAL_PAYLOAD_FIELDS), where the payload comparison below leaves it out too.
+                $timeCounts = !in_array('updatedAt', DEVICE_LOCAL_PAYLOAD_FIELDS[$tableName] ?? [], true);
                 if ($existing['table_name'] !== $tableName
                     || $existing['row_id'] !== $rowId
-                    || $existing['updated_at'] !== $updatedAt
+                    || ($timeCounts && $existing['updated_at'] !== $updatedAt)
                     || !revisionPayloadsMatch($tableName, json_decode((string) $existing['payload'], true), $payload)) {
-                    throw new \RuntimeException('A source revision was already recorded with different content.');
+                    $highest = $pdo->prepare('SELECT MAX(local_rev) FROM sync_changes WHERE shop_id = ? AND device_id = ?');
+                    $highest->execute([$client['shop_id'], $sourceDeviceId]);
+                    throw new RevisionClash($sourceDeviceId, $localRev, (int) $highest->fetchColumn());
                 }
                 continue;
             }
@@ -1708,6 +1897,17 @@ if ($action === 'push_changes' && $method === 'POST') {
             ]);
         }
         $pdo->commit();
+    } catch (RevisionClash $e) {
+        // The same words as ever (apps up to 1.0.89 look for them), plus what a device needs to renumber past the clash.
+        $pdo->rollBack();
+        jsonResponse([
+            'success' => false,
+            'message' => 'Could not record changes: ' . $e->getMessage(),
+            'reason' => 'revision_clash',
+            'source_device_id' => $e->sourceDeviceId,
+            'local_rev' => $e->localRev,
+            'max_local_rev' => $e->maxLocalRev,
+        ], 422);
     } catch (\RuntimeException $e) {
         // Our own validation message (thrown just above, in this same
         // function) - safe to show verbatim, unlike a raw DB exception.
@@ -1832,6 +2032,24 @@ if ($action === 'lite_report' && $method === 'GET') {
         'server_time' => gmdate('Y-m-d\TH:i:s\Z'),
         'report' => LiteReport::build($pdo, (int) $client['shop_id'], $fromUtc, $toUtc, $fromDate, $toDate, ($_GET['records'] ?? '') === '1'),
     ]);
+}
+
+// One sale of the shop with its lines and what is still left to refund on each (see LiteSale): what the lite till needs to
+// offer a refund of a sale that any device of the shop made. Read-only.
+if ($action === 'lite_sale' && $method === 'GET') {
+    $client = Auth::requireClient($pdo);
+    if ($client['channel'] !== 'lite') {
+        jsonResponse(['success' => false, 'message' => 'The shop sale view is only for lite tills.'], 403);
+    }
+    $saleId = (string) ($_GET['id'] ?? '');
+    if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $saleId) !== 1) {
+        jsonResponse(['success' => false, 'message' => 'id must be the id of a sale.'], 422);
+    }
+    $found = LiteSale::find($pdo, (int) $client['shop_id'], $saleId);
+    if ($found === null) {
+        jsonResponse(['success' => false, 'message' => 'The shop has no such sale.'], 404);
+    }
+    jsonResponse(array_merge(['success' => true, 'shop_id' => (int) $client['shop_id'], 'server_time' => gmdate('Y-m-d\TH:i:s\Z')], $found));
 }
 
 // The lite till's dashboard: sales, transactions, profit and expenses for each of several consecutive periods (today,

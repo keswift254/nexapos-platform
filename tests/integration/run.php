@@ -277,9 +277,23 @@ check((int) $pdo->query("SELECT COUNT(*) FROM sync_changes WHERE device_id = 'ow
     'The stock-only resend created a second copy of the revision.');
 check(json_decode((string) $pdo->query("SELECT payload FROM sync_changes WHERE device_id = 'owner-device' AND local_rev = 91")->fetchColumn(), true)['stockQty'] === 10,
     'The stock-only resend overwrote the stored revision.');
+// a sale moved the product's updatedAt too (the app's stock update, or the database trigger behind its stock recount):
+// still the same revision
+$later = gmdate('Y-m-d\TH:i:s', time() + 60) . '.222222Z';
+$drifted = $productChange(['stockQty' => 6, 'updatedAt' => $later]);
+$drifted['updated_at'] = $later;
+$driftedResend = request($baseUrl, 'push_changes', 'POST', ['changes' => [$drifted]], $ownerAuth);
+check($driftedResend['status'] === 200, 'A re-sent product revision whose updatedAt moved with its stock was refused: ' . $driftedResend['raw']);
+check((string) $pdo->query("SELECT updated_at FROM sync_changes WHERE device_id = 'owner-device' AND local_rev = 91")->fetchColumn() === $productStamp,
+    'The drifted resend overwrote the stored revision time.');
 $priceChange = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['priceMinor' => 99999])]], $ownerAuth);
-check($priceChange['status'] === 422 && str_contains((string) ($priceChange['body']['message'] ?? ''), 'different content'),
+check($priceChange['status'] === 422 && str_contains((string) ($priceChange['body']['message'] ?? ''), 'already recorded with different content'),
     'A re-sent product revision with a different price was accepted: ' . $priceChange['raw']);
+// a clash says what the device needs to number its unsent changes past it
+$ownerMax = (int) $pdo->query("SELECT MAX(local_rev) FROM sync_changes WHERE device_id = 'owner-device'")->fetchColumn();
+check(($priceChange['body']['reason'] ?? null) === 'revision_clash' && ($priceChange['body']['source_device_id'] ?? null) === 'owner-device'
+    && ($priceChange['body']['local_rev'] ?? null) === 91 && ($priceChange['body']['max_local_rev'] ?? null) === $ownerMax && $ownerMax >= 91,
+    'A revision clash did not report the highest revision held for the device: ' . $priceChange['raw']);
 $extraField = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['barcode' => 'X1'])]], $ownerAuth);
 check($extraField['status'] === 422, 'A re-sent product revision with an extra field was accepted.');
 $otherTableStock = $productChange(['stockQty' => 3], 92);
@@ -289,6 +303,17 @@ check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableStock]
 $otherTableStock['payload']['stockQty'] = 4;
 check(request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableStock]], $ownerAuth)['status'] === 422,
     'The device-local allowance leaked to a table other than products.');
+$otherTableTime = $otherTableStock;
+$otherTableTime['payload']['stockQty'] = 3;
+$otherTableTime['updated_at'] = $otherTableTime['payload']['updatedAt'] = $later;
+$otherTime = request($baseUrl, 'push_changes', 'POST', ['changes' => [$otherTableTime]], $ownerAuth);
+check($otherTime['status'] === 422 && ($otherTime['body']['reason'] ?? null) === 'revision_clash',
+    'A category resend with another updatedAt was accepted (only products may move it): ' . $otherTime['raw']);
+// a clash on an OLDER revision reports the highest the device has (here 92, the category), not the clashing one
+$olderClash = request($baseUrl, 'push_changes', 'POST', ['changes' => [$productChange(['priceMinor' => 88888])]], $ownerAuth);
+$ownerMaxNow = (int) $pdo->query("SELECT MAX(local_rev) FROM sync_changes WHERE device_id = 'owner-device'")->fetchColumn();
+check($ownerMaxNow > 91 && ($olderClash['body']['local_rev'] ?? null) === 91 && ($olderClash['body']['max_local_rev'] ?? null) === $ownerMaxNow,
+    'A clash on an older revision did not report the highest revision of the device: ' . $olderClash['raw']);
 
 $inactiveRelay = $relayChange;
 $inactiveRelay['local_rev'] = 78;
@@ -973,7 +998,137 @@ foreach ($withRecords['body']['report']['expenses'] as $candidate) {
 check(is_array($recordsOf['Second main PC expense'] ?? null) && ($recordsOf['Second main PC expense']['createdByDeviceId'] ?? '') !== '' && ($recordsOf['Second main PC expense']['createdByDeviceId'] ?? '') !== 'lite-till-device', 'The main device\'s expense does not name the device that entered it: ' . json_encode($recordsOf['Second main PC expense'] ?? null));
 check(is_array($recordsOf['Transport'] ?? null) && ($recordsOf['Transport']['createdByDeviceId'] ?? '') === 'lite-till-device', 'The till\'s own expense does not name the till as its device: ' . json_encode($recordsOf['Transport'] ?? null));
 
-echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports and dashboard served, expenses added and deleted.\n";
+// ---- refunds: the real app's refund records, pushed by a normal device, show up in the lite reports ----------------
+$refundFixture = json_decode((string) file_get_contents(__DIR__ . '/../fixtures/sync_guard/refund_scenarios.json'), true, 512, JSON_THROW_ON_ERROR);
+$manualItem = null;
+foreach ($refundFixture['scenarios'] as $candidate) {
+    if ($candidate['name'] === 'refund_manual_item') {
+        $manualItem = $candidate;
+    }
+}
+check($manualItem !== null, 'The refund fixture has no refund_manual_item scenario.');
+foreach ($manualItem['stages'] as $stage) {
+    foreach ($stage['changes'] as $change) {
+        // A normal device pushes whatever the app wrote: a refund is just another sale row, so it must be accepted as it is.
+        $pushedRefund = $nativePush($change['table_name'], $change['payload']);
+        check($pushedRefund['status'] === 200, 'The app\'s own ' . $change['table_name'] . ' record of a refund scenario was refused: ' . $pushedRefund['raw']);
+    }
+}
+$refundDay = $reportRequest(['from_utc' => '2026-11-16T00:00:00.000Z', 'to_utc' => '2026-11-17T00:00:00.000Z', 'from_date' => '2026-11-16', 'to_date' => '2026-11-17'], $liteAuth);
+check($refundDay['status'] === 200, 'The report for the refund day was not served: ' . $refundDay['raw']);
+$refundReport = $refundDay['body']['report'];
+check($refundReport['salesTotalCents'] === 15000 && $refundReport['transactionCount'] === 1, 'The sale of the refund scenario is not in the report as a sale: ' . json_encode([$refundReport['salesTotalCents'], $refundReport['transactionCount']]));
+check($refundReport['refundsTotalCents'] === 5000 && $refundReport['refundCount'] === 1, 'The refund is not counted in Refunds: ' . json_encode([$refundReport['refundsTotalCents'], $refundReport['refundCount']]));
+check($refundReport['grandTotalCents'] === 15000 - 5000 - $refundReport['expensesTotalCents'], 'Grand total is not paid sales minus refunds minus expenses.');
+check(count($refundReport['sales']) === 1 && $refundReport['sales'][0]['refundedCents'] === 5000, 'The refunded sale does not say how much of it has gone back.');
+check(($refundReport['refunds'][0]['reason'] ?? '') === 'Not delivered' && ($refundReport['refunds'][0]['itemNames'] ?? '') === 'Delivery x1' && $refundReport['refunds'][0]['totalCents'] === 5000, 'The refund is not listed as the app wrote it: ' . json_encode($refundReport['refunds'][0] ?? null));
+check($refundReport['refunds'][0]['originalSaleNumber'] === $refundReport['sales'][0]['saleNumber'], 'The refund does not name the sale it gives back.');
+$refundDash = $dashboardRequest(['bounds' => '2026-11-16T00:00:00.000Z,2026-11-17T00:00:00.000Z', 'dates' => '2026-11-16,2026-11-17'], $liteAuth);
+check(($refundDash['body']['days'][0]['salesTotalCents'] ?? null) === 10000 && ($refundDash['body']['days'][0]['refundsCents'] ?? null) === 5000, 'The dashboard is not net of the refund: ' . $refundDash['raw']);
+$strangerRefunds = $reportRequest(['from_utc' => '2026-11-16T00:00:00.000Z', 'to_utc' => '2026-11-17T00:00:00.000Z', 'from_date' => '2026-11-16', 'to_date' => '2026-11-17'], $liteStandaloneAuth);
+check(($strangerRefunds['body']['report']['refundsTotalCents'] ?? -1) === 0, 'Another shop was shown this shop\'s refund.');
+
+// ---- refunds made BY a lite till: only exactly what the app would write, against the sale as the shop holds it -----------
+$partScenario = null;
+foreach ($refundFixture['scenarios'] as $candidate) {
+    if ($candidate['name'] === 'refund_partial_mpesa_sale_in_two_parts') {
+        $partScenario = $candidate;
+    }
+}
+check($partScenario !== null, 'The refund fixture has no refund_partial_mpesa_sale_in_two_parts scenario.');
+foreach (['users', 'products'] as $contextTable) {
+    foreach ($partScenario['context'][$contextTable] as $row) {
+        check($nativePush($contextTable, $row)['status'] === 200, "The main device could not record a $contextTable record of the refund scenario.");
+    }
+}
+foreach ($partScenario['stages'][0]['changes'] as $change) {
+    check($nativePush($change['table_name'], $change['payload'])['status'] === 200, 'The main device could not record the sale to refund.');
+}
+$soldId = null;
+foreach ($partScenario['stages'][0]['changes'] as $change) {
+    if ($change['table_name'] === 'sales') {
+        $soldId = $change['payload']['id'];
+    }
+}
+$saleView = static function (string $saleId, array $headers) use ($baseUrl): array {
+    $ch = curl_init($baseUrl . '?' . http_build_query(['action' => 'lite_sale', 'id' => $saleId]));
+    curl_setopt_array($ch, [CURLOPT_HTTPHEADER => array_merge(['Accept: application/json'], $headers), CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20]);
+    $raw = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['status' => $status, 'body' => json_decode((string) $raw, true), 'raw' => $raw];
+};
+check($saleView($soldId, [])['status'] === 401, 'lite_sale was readable with no key.');
+check($saleView($soldId, $liteOwnerAuth)['status'] === 403, 'A normal device was given the lite sale view.');
+check($saleView('not-an-id', $liteAuth)['status'] === 422, 'A bad sale id was accepted.');
+check($saleView('00000000-0000-4000-8000-0000000000ff', $liteAuth)['status'] === 404, 'A sale the shop does not have was served.');
+check($saleView($soldId, $liteStandaloneAuth)['status'] === 404, 'Another shop was shown this shop\'s sale.');
+$before = $saleView($soldId, $liteAuth);
+check($before['status'] === 200 && $before['body']['sale']['id'] === $soldId && count($before['body']['items']) === 1 && $before['body']['refundCount'] === 0, 'The sale to refund was not served as it is: ' . $before['raw']);
+check($before['body']['lines'][0]['quantity'] === 3 && $before['body']['lines'][0]['remaining'] === 3, 'The whole sale should be refundable: ' . json_encode($before['body']['lines']));
+
+$firstRefund = $partScenario['stages'][1]['changes'];
+// a cashier cannot refund, whatever the records look like
+$cashierRefund = $firstRefund;
+foreach ($cashierRefund as $k => $c) {
+    if ($c['table_name'] === 'sales') {
+        $cashierRefund[$k]['payload']['userId'] = $partScenario['context']['cashierId'];
+    }
+    if ($c['table_name'] === 'stock_movements') {
+        $cashierRefund[$k]['payload']['userId'] = $partScenario['context']['cashierId'];
+    }
+}
+$storedBefore = $liteStored();
+$refusedCashier = $litePush($asLite($cashierRefund));
+check($refusedCashier['status'] === 422 && str_contains((string) ($refusedCashier['body']['message'] ?? ''), 'administrator or a manager'), 'A cashier\'s refund was not refused for that reason: ' . $refusedCashier['raw']);
+// a refund that gives back more discount than its share is refused, and nothing of it is stored
+$greedy = $firstRefund;
+foreach ($greedy as $k => $c) {
+    if ($c['table_name'] === 'sale_items') {
+        $greedy[$k]['payload']['quantity'] = -4;
+        $greedy[$k]['payload']['lineTotalCents'] = -40000;
+    }
+}
+$refusedGreedy = $litePush($asLite($greedy));
+check($refusedGreedy['status'] === 422 && str_contains((string) ($refusedGreedy['body']['message'] ?? ''), 'can still be refunded'), 'A refund of more than was sold was not refused: ' . $refusedGreedy['raw']);
+check($liteStored() === $storedBefore, 'Part of a refused refund was stored.');
+// the real refund is accepted ...
+$goodRefund = $litePush($asLite($firstRefund));
+check($goodRefund['status'] === 200, 'The app\'s own refund was refused: ' . $goodRefund['raw']);
+$afterOne = $saleView($soldId, $liteAuth);
+check($afterOne['body']['refundCount'] === 1 && $afterOne['body']['lines'][0]['refunded'] === 1 && $afterOne['body']['lines'][0]['remaining'] === 2, 'The sale does not show the refund: ' . json_encode($afterOne['body']['lines'] ?? null));
+check($afterOne['body']['refunded']['totalCents'] === 10000, 'The sale does not say how much has gone back: ' . json_encode($afterOne['body']['refunded'] ?? null));
+// ... and so is the second, which is built on the first
+$secondRefund = $litePush($asLite($partScenario['stages'][2]['changes']));
+check($secondRefund['status'] === 200, 'The app\'s own second refund (after the first) was refused: ' . $secondRefund['raw']);
+$afterTwo = $saleView($soldId, $liteAuth);
+check($afterTwo['body']['lines'][0]['remaining'] === 0 && $afterTwo['body']['refundCount'] === 2, 'The sale is not refunded in full: ' . json_encode($afterTwo['body']['lines'] ?? null));
+// nothing more can be refunded
+$again = $firstRefund;
+$againIds = [];
+foreach ($again as $k => $c) {
+    $newId = sprintf('%08x-0000-4000-8000-%012x', random_int(1, PHP_INT_MAX >> 40), random_int(1, PHP_INT_MAX >> 20));
+    $againIds[$c['payload']['id']] = $newId;
+}
+foreach ($again as $k => $c) {
+    $again[$k]['payload']['id'] = $againIds[$c['payload']['id']];
+    if (isset($c['payload']['saleId']) && isset($againIds[$c['payload']['saleId']])) {
+        $again[$k]['payload']['saleId'] = $againIds[$c['payload']['saleId']];
+    }
+    if ($c['table_name'] === 'sales') {
+        $again[$k]['payload']['saleNumber'] = 'AGAIN-0001';
+    }
+    if ($c['table_name'] === 'stock_movements') {
+        $again[$k]['payload']['note'] = 'Refund AGAIN-0001';
+    }
+}
+$refusedAgain = $litePush($asLite($again));
+check($refusedAgain['status'] === 422 && str_contains((string) ($refusedAgain['body']['message'] ?? ''), 'can still be refunded'), 'A refund of a sale that is already refunded in full was not refused: ' . $refusedAgain['raw']);
+// the shop's reports follow the refunds the till made
+$partDay = $reportRequest(['from_utc' => '2026-11-16T00:00:00.000Z', 'to_utc' => '2026-11-17T00:00:00.000Z', 'from_date' => '2026-11-16', 'to_date' => '2026-11-17'], $liteAuth);
+check(($partDay['body']['report']['refundsTotalCents'] ?? 0) === 5000 + 30000, 'The reports do not count the refunds the till made: ' . json_encode($partDay['body']['report']['refundsTotalCents'] ?? null));
+
+echo "Lite till tests passed: real sales accepted, tampered sales refused and not stored, restrictions applied, reports and dashboard served, expenses added and deleted, refunds reported and made.\n";
 echo "Platform integration tests passed.\n";
 
 // Photos are private, validated, and attached to the same message transaction.
@@ -998,3 +1153,6 @@ foreach ([['data' => base64_encode('<svg onload="alert(1)"></svg>')], ['data' =>
 }
 check(request($baseUrl, 'support_reply', 'POST', ['ticket_id' => $ticketId, 'message' => 'Too many', 'attachments' => array_fill(0, 5, ['data' => $png])], ['Authorization: Bearer ' . $supportKey])['status'] === 422, 'Too many photos accepted.');
 echo "Support photo access and validation tests passed.\n";
+
+// "Manual Till/Paybill": the shop's payment inbox.
+require __DIR__ . '/payment_inbox.php';

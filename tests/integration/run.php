@@ -120,6 +120,23 @@ $disabledRecovery = request($baseUrl, 'register_device', 'POST', [
 ]);
 check($disabledRecovery['status'] === 409, 'Registration recovery reactivated a disabled device.');
 
+// Anyone may register, and the vendor's dashboard shows the id and name: an id that is not a plain identifier is
+// refused before anything is stored, and a name is kept to one line of at most 160 characters.
+$shopsBefore = (int) $pdo->query('SELECT COUNT(*) FROM shops')->fetchColumn();
+foreach (["x');alert(1);//", '"><img src=x onerror=alert(1)>', 'has space', str_repeat('a', 65), '-leading-dash', "tab\tid"] as $badId) {
+    $refused = request($baseUrl, 'register_device', 'POST', ['device_id' => $badId, 'device_label' => 'x', 'registration_secret' => 'bad-id-secret']);
+    check($refused['status'] === 422, 'A device id that is not a plain identifier was accepted: ' . json_encode($badId) . ' -> ' . $refused['status']);
+}
+check((int) $pdo->query('SELECT COUNT(*) FROM shops')->fetchColumn() === $shopsBefore, 'A refused registration still created a shop.');
+foreach (['0f8fad5b-d9cb-469f-a165-70867728950e', 'lite-0123456789ab'] as $realId) {
+    $accepted = request($baseUrl, 'register_device', 'POST', ['device_id' => $realId, 'device_label' => "Mary's\r\nphone\x07 " . str_repeat('é', 200), 'registration_secret' => 'real-id-secret']);
+    check($accepted['status'] === 201, 'A real app device id was refused: ' . $realId . ' -> ' . $accepted['status']);
+    $label = $pdo->prepare('SELECT device_label FROM clients WHERE device_id = ?');
+    $label->execute([$realId]);
+    $stored = (string) $label->fetchColumn();
+    check(!preg_match('/[\x00-\x1F\x7F]/', $stored) && mb_strlen($stored) === 160 && str_starts_with($stored, "Mary's phone"), 'The device name was not cleaned: ' . json_encode($stored));
+}
+
 $owner = register($baseUrl, 'owner-device');
 $joinA = register($baseUrl, 'join-device-a');
 $joinB = register($baseUrl, 'join-device-b');

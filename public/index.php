@@ -1376,7 +1376,13 @@ if ($action === 'admin_revoke_shop' && $method === 'POST') {
 if ($action === 'register_device' && $method === 'POST') {
     $body = requestBody();
     $deviceId = trim((string) ($body['device_id'] ?? ''));
-    $deviceLabel = trim((string) ($body['device_label'] ?? '')) ?: 'Unnamed device';
+    // Anyone may call this, and both values are shown on the vendor's dashboard: the id must be a plain identifier
+    // (every app makes a UUID, the lite till "lite-" and hex - never quotes, brackets or spaces), and the name is one
+    // line of at most 160 characters (the column's size) with no control characters.
+    if ($deviceId !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/D', $deviceId) !== 1) {
+        jsonResponse(['success' => false, 'message' => 'device_id must be 1 to 64 letters, digits, dots, dashes, underscores or colons.'], 422);
+    }
+    $deviceLabel = mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', (string) ($body['device_label'] ?? ''))), 0, 160) ?: 'Unnamed device';
     // Client-generated, sent on every registration attempt for this
     // device_id (first and any retry) - see clients.registration_secret_hash's
     // schema comment for why this exists. Not optional: a client too
